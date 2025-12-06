@@ -14,10 +14,7 @@ import io
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
-from dotenv import load_dotenv
 
-# .env 파일 로드
-load_dotenv()
 # 정규화 스크립트 임포트
 try:
     from normalize_db import normalize_database
@@ -54,15 +51,21 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ============================================
-# 🔑 OpenAI API 키를 .env 파일에서 읽어옵니다
+# 🔑 OpenAI API 키를 Streamlit Secrets에서 읽어옵니다
 # ============================================
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# API 키 확인
-if not OPENAI_API_KEY:
-    st.error("⚠️ OpenAI API 키를 .env 파일에 설정해주세요!")
-    st.info("💡 프로젝트 루트 폴더의 .env 파일에 다음을 추가하세요:")
-    st.code("OPENAI_API_KEY=your-api-key-here", language="bash")
+try:
+    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+except (KeyError, AttributeError):
+    st.error("⚠️ OpenAI API 키를 Streamlit Secrets에 설정해주세요!")
+    st.info("💡 Streamlit Cloud에서 Secrets를 설정하는 방법:")
+    st.markdown("""
+    1. Streamlit Cloud 대시보드로 이동
+    2. 앱 선택 → Settings → Secrets
+    3. 다음 형식으로 추가:
+    ```
+    OPENAI_API_KEY = "your-api-key-here"
+    ```
+    """)
     st.stop()
 
 # OpenAI 클라이언트 초기화
