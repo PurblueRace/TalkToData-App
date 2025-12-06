@@ -1,5 +1,0 @@
-streamlit
-openai==1.10.0
-pandas==2.2.0
-plotly==5.18.0
-openpyxl
