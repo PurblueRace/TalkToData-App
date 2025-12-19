@@ -40,6 +40,18 @@ python setup_db.py
 
 ### 3. Streamlit 뷰어 실행
 
+### 3-0. OpenAI API 키 설정 (필수)
+
+- **방법 A) `.streamlit/secrets.toml` 사용**
+  - `.streamlit/secrets.toml.example`을 참고해서 `.streamlit/secrets.toml`을 만들고 `OPENAI_API_KEY`를 넣어주세요.
+- **방법 B) 환경변수 사용 (PowerShell)**
+
+```bash
+$env:OPENAI_API_KEY="your-api-key-here"
+```
+
+### 3. Streamlit 뷰어 실행
+
 ```bash
 streamlit run sqlite_viewer.py
 ```

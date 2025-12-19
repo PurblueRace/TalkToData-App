@@ -1,0 +1,11 @@
+=== 1. Proof Types (증빙유형) searching for Card/Cash ===
+No 'Card' or 'Cash' found in 증빙유형.
+
+=== 2. 'Revenue/Income' Accounts (checking for Interest/Dividend) ===
+     계정명
+0   이자수익
+1  임대료수익
+2  배당금수익
+3   선수수익
+4  수수료수익
+5   미수수익
