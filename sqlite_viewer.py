@@ -12,6 +12,7 @@ import json
 import time
 import io
 import textwrap
+import html
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
@@ -1400,49 +1401,327 @@ st.markdown("""
     }
     
     /* ==========================================
-       탭 호버 효과 - 사이드바 스타일 동일 적용
+       Dashboard workspace tabs
        ========================================== */
-    
-    /* 탭 버튼 기본 스타일 */
-    button[data-baseweb="tab"] {
-        padding: 0.75rem 1.5rem !important;
-        margin: 0 0.25rem !important;
-        border-radius: 0 !important;
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tablist"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] div[data-baseweb="tab-list"] {
+        display: flex !important;
+        width: 100% !important;
+        gap: 0.25rem !important;
+        padding: 0.25rem !important;
+        border: 1px solid #e4e7ec !important;
+        border-radius: 12px !important;
+        background: #f4f5f7 !important;
+        box-sizing: border-box !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"] {
+        display: flex !important;
+        flex: 1 1 0 !important;
+        align-items: center !important;
+        justify-content: center !important;
+        min-height: 42px !important;
+        margin: 0 !important;
+        padding: 0.625rem 1rem !important;
         border: none !important;
-        border-bottom: 3px solid transparent !important;
+        border-radius: 9px !important;
         background: transparent !important;
-        color: #475569 !important;
-        font-size: 0.95rem !important;
-        font-weight: 500 !important;
-        transition: all 0.25s ease !important;
+        color: #667085 !important;
+        font-size: 0.9rem !important;
+        line-height: 1.2 !important;
+        font-weight: 600 !important;
+        box-shadow: none !important;
+        transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease !important;
         cursor: pointer !important;
     }
-    
-    /* 호버 시 빨간색 + 밑줄 */
-    button[data-baseweb="tab"]:hover {
-        color: #dc2626 !important;
-        border-bottom: 3px solid #dc2626 !important;
-        background: transparent !important;
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"] p,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"] span,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"] p,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"] span {
+        margin: 0 !important;
+        color: inherit !important;
+        white-space: nowrap !important;
     }
-    
-    /* 선택된 탭 - 진한 빨간색 + 굵은 밑줄 */
-    button[data-baseweb="tab"][aria-selected="true"] {
-        color: #b91c1c !important;
-        border-bottom: 3px solid #b91c1c !important;
-        font-weight: 700 !important;
-        background: transparent !important;
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"]:hover,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
+        background: #eaecf0 !important;
+        color: #344054 !important;
     }
-    
-    /* 탭 컨테이너 */
-    div[data-baseweb="tab-list"] {
-        border-bottom: 1px solid #e5e7eb !important;
-        background: transparent !important;
-        gap: 0 !important;
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"]:focus-visible,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"]:focus-visible {
+        outline: 2px solid #98a2b3 !important;
+        outline-offset: 2px !important;
     }
-    
-    /* 탭 패널 */
-    div[data-baseweb="tab-panel"] {
-        padding-top: 2rem !important;
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"][aria-selected="true"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {
+        background: #ffffff !important;
+        color: #101828 !important;
+        font-weight: 650 !important;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08), 0 1px 3px rgba(16, 24, 40, 0.05) !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] .react-aria-SelectionIndicator,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [data-baseweb="tab-highlight"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [data-baseweb="tab-border"] {
+        display: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tabpanel"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] div[data-baseweb="tab-panel"] {
+        padding-top: 1.25rem !important;
+    }
+
+    .dashboard-empty-state {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.875rem;
+        padding: 1rem 1.125rem;
+        border: 1px solid #e4e7ec;
+        border-radius: 14px;
+        background: #fbfcfd;
+        color: #344054;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+    }
+
+    .dashboard-empty-state__marker {
+        width: 0.625rem;
+        height: 0.625rem;
+        margin-top: 0.35rem;
+        flex: 0 0 auto;
+        border-radius: 999px;
+        background: #475467;
+        box-shadow: 0 0 0 4px #eef2f6;
+    }
+
+    .dashboard-empty-state__title {
+        color: #1d2939;
+        font-size: 0.925rem;
+        line-height: 1.4;
+        font-weight: 650;
+    }
+
+    .dashboard-empty-state__description {
+        margin-top: 0.2rem;
+        color: #667085;
+        font-size: 0.875rem;
+        line-height: 1.55;
+    }
+
+    .dashboard-section-header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 1.5rem;
+        margin: 0.125rem 0 1.125rem;
+    }
+
+    .dashboard-section-header__title {
+        color: #101828;
+        font-size: 1.25rem;
+        line-height: 1.35;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+
+    .dashboard-section-header__description {
+        max-width: 42rem;
+        margin-top: 0.3rem;
+        color: #667085;
+        font-size: 0.875rem;
+        line-height: 1.55;
+    }
+
+    .dashboard-section-header__meta {
+        flex: 0 0 auto;
+        padding: 0.375rem 0.625rem;
+        border: 1px solid #e4e7ec;
+        border-radius: 8px;
+        background: #f9fafb;
+        color: #475467;
+        font-size: 0.78rem;
+        line-height: 1;
+        font-weight: 650;
+        white-space: nowrap;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-saved_table_card_"] {
+        margin-bottom: 0.875rem;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-saved_table_card_"] [data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 1rem 1.125rem 1.125rem !important;
+        border: 1px solid #e4e7ec !important;
+        border-radius: 14px !important;
+        background: #ffffff !important;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+    }
+
+    .saved-table-card__title {
+        overflow: hidden;
+        color: #1d2939;
+        font-size: 1rem;
+        line-height: 1.45;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .saved-table-card__meta {
+        margin-top: 0.25rem;
+        color: #667085;
+        font-size: 0.78rem;
+        line-height: 1.4;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-saved_table_card_"] [data-testid="stDataFrame"] {
+        overflow: hidden;
+        border: 1px solid #eaecf0;
+        border-radius: 10px;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-delete_saved_"] button {
+        min-height: 2.25rem !important;
+        border: 1px solid #e4e7ec !important;
+        border-radius: 9px !important;
+        background: #ffffff !important;
+        color: #b42318 !important;
+        font-size: 0.82rem !important;
+        font-weight: 600 !important;
+        box-shadow: none !important;
+        transform: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-delete_saved_"] button:hover {
+        border-color: #fda29b !important;
+        background: #fff5f4 !important;
+        color: #912018 !important;
+        transform: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_workspace [data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 1.125rem !important;
+        border: 1px solid #e4e7ec !important;
+        border-radius: 14px !important;
+        background: #fbfcfd !important;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+    }
+
+    .ai-workspace__intro {
+        margin-bottom: 0.25rem;
+    }
+
+    .ai-workspace__title {
+        color: #1d2939;
+        font-size: 0.95rem;
+        line-height: 1.4;
+        font-weight: 650;
+    }
+
+    .ai-workspace__description,
+    .ai-workspace__selection-note {
+        margin-top: 0.2rem;
+        color: #667085;
+        font-size: 0.8rem;
+        line-height: 1.5;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_prompt textarea {
+        border: 1px solid #d0d5dd !important;
+        border-radius: 10px !important;
+        background: #ffffff !important;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_prompt textarea:focus {
+        border-color: #667085 !important;
+        box-shadow: 0 0 0 3px rgba(71, 84, 103, 0.12) !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_sources [data-baseweb="tag"] {
+        border: 1px solid #d0d5dd !important;
+        background: #eef2f6 !important;
+        color: #344054 !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_sources [data-baseweb="tag"] span,
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_sources [data-baseweb="tag"] svg {
+        color: #475467 !important;
+        fill: currentColor !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-run_ai_analysis button {
+        min-height: 2.75rem !important;
+        border: 1px solid #101828 !important;
+        border-radius: 10px !important;
+        background: #101828 !important;
+        color: #ffffff !important;
+        font-weight: 650 !important;
+        box-shadow: none !important;
+        transform: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-run_ai_analysis button:hover {
+        border-color: #344054 !important;
+        background: #344054 !important;
+        color: #ffffff !important;
+        transform: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-run_ai_analysis button:disabled {
+        border-color: #d0d5dd !important;
+        background: #eaecf0 !important;
+        color: #98a2b3 !important;
+    }
+
+    .ai-analysis-result-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin: 1.5rem 0 0.75rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid #eaecf0;
+    }
+
+    .ai-analysis-result-header__title {
+        color: #101828;
+        font-size: 1rem;
+        line-height: 1.4;
+        font-weight: 700;
+    }
+
+    .ai-analysis-result-header__meta {
+        color: #667085;
+        font-size: 0.78rem;
+        line-height: 1.4;
+        text-align: right;
+    }
+
+    @media (max-width: 640px) {
+        .dashboard-section-header,
+        .ai-analysis-result-header {
+            align-items: flex-start;
+            flex-direction: column;
+            gap: 0.625rem;
+        }
+
+        section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tablist"],
+        section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] div[data-baseweb="tab-list"] {
+            overflow-x: auto !important;
+        }
+
+        section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"],
+        section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"] {
+            flex: 1 0 auto !important;
+            min-width: 7rem !important;
+            padding-inline: 0.75rem !important;
+        }
     }
     </style>
  """, unsafe_allow_html=True)
@@ -2319,10 +2598,10 @@ def init_session_state():
 
 
 # ============================================================
-# 2. [신규] 시장/뉴스 융합 심층 분석 함수
+# 2. 저장 데이터 종합 분석 함수
 # ============================================================
 def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: str = "", custom_system_prompt: str = None) -> str:
-    """저장된 여러 표 + 시장/뉴스 정보를 융합한 심층 보고서 생성 (HTML 카드 스타일 적용)"""
+    """저장된 여러 표를 종합한 경영 분석 보고서를 생성합니다."""
     global client
     
     if not saved_tables:
@@ -2345,37 +2624,20 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
              combined_data_context += f"- 주요 수치 통계: {', '.join(stats)}\n"
         combined_data_context += "-" * 50 + "\n"
 
-    # 데이터에서 키워드 추출 (외부 검색용)
-    keywords = []
-    for item in saved_tables:
-        query = item.get('query', '')
-        df = item['data']
-        # 컬럼명에서 키워드 추출
-        for col in df.columns:
-            if any(word in str(col) for word in ['부서', '산업', '제품', '프로젝트', '계정', '거래처']):
-                keywords.append(str(col))
-        # 쿼리에서 키워드 추출
-        if query:
-            keywords.append(query)
-    
-    keyword_str = ", ".join(list(set(keywords))[:10])  # 중복 제거 후 상위 10개
-    
-    # 2. 시스템 프롬프트: HTML/CSS 스타일링 전문가 역할 부여 + 외부 데이터 검색 요구
+    # 2. 시스템 프롬프트: 제공된 데이터에 근거한 간결한 HTML 보고서
     if custom_system_prompt:
         system_prompt = custom_system_prompt
     else:
-        system_prompt = f"""
-    당신은 대기업 최고 전략 책임자(CSO)이자 UI/UX 디자인 감각이 뛰어난 데이터 분석가입니다.
-    
-    **매우 중요한 요구사항:**
-    1. 반드시 **실제 외부 데이터**를 검색하여 활용해야 합니다. 가상의 정보를 만들어내지 마세요.
-    2. 분석에 사용한 **모든 기사, 논문, 연구의 출처를 명확히 명시**해야 합니다 (제목, 출처, 날짜 등).
-    3. 보고서는 **최소 2000단어 이상**으로 매우 상세하고 깊이 있게 작성해야 합니다.
-    4. 각 섹션은 충분히 길고 구체적인 내용을 포함해야 합니다.
-    5. 출력 결과는 **반드시 세련된 HTML 포맷**이어야 합니다. Markdown을 쓰지 마십시오.
-    
-    현재 분석 주제 관련 키워드: {keyword_str}
-    이 키워드들을 기반으로 실제 최신 뉴스, 산업 리포트, 학술 논문, 시장 조사 자료를 검색하여 활용하세요.
+        system_prompt = """
+    당신은 경영진이 빠르게 판단할 수 있도록 복잡한 표를 명료하게 정리하는 데이터 분석가입니다.
+
+    다음 원칙을 반드시 지키세요.
+    1. 제공된 저장 데이터만 근거로 사용하고, 외부 검색을 했다고 주장하거나 확인되지 않은 사실을 만들지 마세요.
+    2. 데이터에서 직접 확인되는 사실과 분석적 해석을 명확히 구분하세요.
+    3. 핵심 결론을 먼저 제시하고 전체 분량은 약 800~1200단어로 제한하세요.
+    4. 결과는 Markdown이 아닌 순수 HTML만 출력하세요.
+    5. 이모지, 그라데이션, 색상 배지, 강한 그림자, 과도한 강조색을 사용하지 마세요.
+    6. 흰 배경, 얇은 회색 구분선, 단일 열 구조로 읽기 쉬운 보고서를 만드세요.
     """
 
     # 3. 사용자 프롬프트: 구체적인 디자인 가이드라인 제공
@@ -2386,37 +2648,21 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
     표 데이터는 분석의 핵심 근거이며, 모든 인사이트는 이 데이터에서 도출되어야 합니다.
     
     **필수 요구사항:**
-    1. **실제 외부 데이터 검색 필수**: 다음 주제들에 대해 실제 최신 정보를 검색하여 활용하세요:
-       - 관련 산업의 최신 트렌드 및 시장 동향
-       - 업계 뉴스 및 경제 리포트
-       - 관련 학술 논문 및 연구 결과
-       - 벤치마킹 데이터 및 경쟁사 분석
-       
-    2. **출처 명시 필수**: 모든 외부 인용 자료는 다음 형식으로 명시해야 합니다:
-       - 기사: "제목" (출판사/매체, 발행일)
-       - 논문/연구: "연구 제목" (저자, 학술지/기관, 발행연도)
-       - 리포트: "보고서 제목" (기관명, 발행연도)
-       
-    3. **보고서 길이**: 최소 2000단어 이상의 상세한 분석이어야 합니다.
-    
-    4. **상세한 내용 요구**:
-       - 데이터 융합 섹션: 표 간의 연관성을 깊이 있게 분석하고, 수치의 의미를 상세히 설명
-       - 시장 동향 섹션: 실제 검색한 외부 자료를 기반으로 최소 3개 이상의 구체적인 시장 트렌드 제시
-       - 핵심 리스크: 각 리스크를 3-4줄 이상 상세히 설명하고, 발생 가능성 및 영향도 분석 포함
-       - 성장 기회: 각 기회를 3-4줄 이상 상세히 설명하고, 실현 가능성 및 예상 효과 포함
-       - C-Level 실행 전략: 각 전략을 5-7줄 이상의 매우 구체적이고 실행 가능한 단계별 액션 플랜으로 작성
-         * 각 전략은 다음을 포함해야 함: 구체적 실행 단계, 예상 일정, 필요 자원, 담당 부서/인력, 예상 비용, 성공 지표(KPI), 리스크 관리 방안
+    1. 제공된 표의 수치와 관계를 우선 분석하고 중요한 변화나 이상 징후를 구체적으로 설명하세요.
+    2. 확인 가능한 데이터 사실과 그 사실에서 도출한 해석을 구분하세요.
+    3. 핵심 요약 3개, 데이터 근거, 주요 리스크와 기회, 실행 제안 순서로 구성하세요.
+    4. 실행 제안에는 우선순위, 담당 역할, 확인할 지표를 포함하되 데이터로 뒷받침되지 않는 수치를 만들지 마세요.
+    5. 전체 분량은 약 800~1200단어로 제한하고 반복 설명을 피하세요.
        
     {additional_context}
     
     [디자인 요구사항]
-    1. 전체를 감싸는 메인 카드는 흰색 배경, 둥근 모서리(16px), 부드러운 그림자(box-shadow)를 가질 것.
-    2. 제목은 그라데이션 텍스트나 진한 네이비색을 사용하여 강조할 것.
-    3. 각 섹션(데이터 융합, 뉴스 분석, 리스크/기회, 실행 전략)은 구분선이나 연한 회색 박스로 구분할 것.
-    4. 'Risk'는 붉은 계열 배경의 뱃지 스타일, 'Opportunity'는 푸른 계열 배경의 뱃지 스타일을 적용할 것.
+    1. 흰색 배경, 12px 모서리, 얇은 #e4e7ec 테두리의 단일 열 구조를 사용할 것.
+    2. 제목은 단색 #101828, 본문은 #344054, 보조 문구는 #667085를 사용할 것.
+    3. 각 섹션은 배경색 카드 대신 충분한 여백과 얇은 구분선으로 나눌 것.
+    4. 이모지, 그라데이션, 색상 배지, 강한 그림자와 과도한 강조색을 사용하지 말 것.
     5. 모든 텍스트는 가독성을 위해 적절한 줄간격(line-height: 1.6)을 유지할 것.
     6. **절대 Markdown 코드 블록(```html)을 사용하지 말고, 순수 HTML 코드만 출력할 것.**
-    7. 출처는 각 섹션 하단에 작은 글씨로 명시하거나, 별도의 "참고문헌" 섹션을 추가할 것.
 
     [분석 대상 데이터]
     {combined_data_context}
@@ -2564,6 +2810,31 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
     </div>
     """
 
+    # 레거시 예시 대신 실제 모델에는 간결하고 중립적인 최종 프롬프트만 전달
+    user_prompt = f"""
+    아래 저장 데이터를 바탕으로 경영진용 종합 분석 보고서를 작성하세요.
+
+    [분석 대상 데이터]
+    {combined_data_context}
+
+    {additional_context}
+
+    [내용 구성]
+    1. 핵심 요약: 가장 중요한 결론 3개
+    2. 데이터 근거: 표 사이의 관계, 주요 수치, 변화 또는 이상 징후
+    3. 리스크와 기회: 데이터에서 합리적으로 도출할 수 있는 항목
+    4. 실행 제안: 우선순위, 담당 역할, 확인할 지표가 포함된 구체적인 다음 단계
+
+    [출력 규칙]
+    - 외부 기사, 뉴스, 논문을 검색하거나 인용했다고 주장하지 말고 제공된 데이터만 분석할 것.
+    - 확인 가능한 데이터 사실과 분석적 해석을 명확히 구분할 것.
+    - 이모지, 그라데이션 제목, 번호/상태 배지, 강한 색상 패널을 모두 제거할 것.
+    - 흰 배경의 단일 열 레이아웃, #e4e7ec 구분선, 10~12px 모서리를 사용할 것.
+    - 리스크와 기회는 중립적인 목록과 얇은 구분선으로 표현할 것.
+    - 제목과 항목명을 자연스러운 한국어로 통일하고 전체 분량은 800~1200단어로 제한할 것.
+    - Markdown 코드 블록 없이 순수 HTML만 반환할 것.
+    """
+
     try:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -2589,7 +2860,12 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
         
         return html_content
     except Exception as e:
-        return f"<div style='color: red; padding: 1rem;'>분석 중 오류 발생: {_format_openai_exception(e)}</div>"
+        safe_error = html.escape(_format_openai_exception(e))
+        return (
+            "<div style='padding:16px 18px;border:1px solid #e4e7ec;border-radius:12px;"
+            "background:#f9fafb;color:#475467;font-family:Pretendard,sans-serif;font-size:14px;'>"
+            f"분석을 완료하지 못했습니다. {safe_error}</div>"
+        )
 
 
 def check_table_exists(table_name: str) -> bool:
@@ -2735,6 +3011,41 @@ def fetch_projects():
         return pd.DataFrame()
 
 
+def render_dashboard_empty_state(title: str, description: str) -> None:
+    """Render a neutral empty-state card inside the dashboard workspace."""
+    safe_title = html.escape(title)
+    safe_description = html.escape(description)
+    st.markdown(f"""
+    <div class="dashboard-empty-state" role="status">
+        <span class="dashboard-empty-state__marker" aria-hidden="true"></span>
+        <div>
+            <div class="dashboard-empty-state__title">{safe_title}</div>
+            <div class="dashboard-empty-state__description">{safe_description}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_dashboard_section_header(title: str, description: str, meta: str = "") -> None:
+    """Render a compact header for a dashboard tab section."""
+    safe_title = html.escape(title)
+    safe_description = html.escape(description)
+    safe_meta = html.escape(meta)
+    meta_html = (
+        f'<div class="dashboard-section-header__meta">{safe_meta}</div>'
+        if safe_meta else ""
+    )
+    st.markdown(f"""
+    <div class="dashboard-section-header">
+        <div>
+            <div class="dashboard-section-header__title" role="heading" aria-level="3">{safe_title}</div>
+            <div class="dashboard-section-header__description">{safe_description}</div>
+        </div>
+        {meta_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def render_dashboard_page():
     """대시보드 페이지 - 채팅창과 그래프"""
     # 헤더 - 제목 (중앙 정렬)
@@ -2854,7 +3165,7 @@ def render_dashboard_page():
     st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
     
     # 탭 구성 (항상 표시)
-    tab1, tab2, tab3, tab4 = st.tabs(["📝 SQL & 데이터", "📊 저장된 표 관리", "🧠 AI 융합 분석", "📈 시각화"])
+    tab1, tab2, tab3, tab4 = st.tabs(["SQL · 데이터", "저장된 표", "AI 분석", "시각화"])
     
     # 메시지 처리 (탭 외부에서 사용자 메시지 표시)
     if st.session_state.messages:
@@ -2926,36 +3237,28 @@ def render_dashboard_page():
             st.markdown("### 생성된 SQL")
             st.code(current_sql_query, language='sql')
         else:
-            st.info("💡 위의 입력창에 질문을 입력하면 SQL 쿼리 결과가 여기에 표시됩니다.")
+            render_dashboard_empty_state(
+                "분석할 질문을 입력하세요",
+                "위 검색창에 자연어로 질문하면 생성된 SQL과 분석 결과를 이 영역에서 확인할 수 있습니다."
+            )
 
     # [탭 2] 저장된 표 관리
     with tab2:
-        st.subheader("📂 저장된 데이터 보관함")
+        saved_table_count = len(st.session_state.saved_tables)
+        render_dashboard_section_header(
+            "저장된 표",
+            "분석 결과를 다시 확인하고 AI 분석에 사용할 데이터를 관리합니다.",
+            f"{saved_table_count}개 저장" if saved_table_count else ""
+        )
         
         if not st.session_state.saved_tables:
-            st.info("📭 보관함이 비어있습니다. 'SQL & 데이터' 탭에서 표를 저장해주세요.")
+            render_dashboard_empty_state(
+                "아직 저장된 표가 없습니다",
+                "SQL · 데이터 탭에서 분석 결과를 저장하면 이곳에서 다시 확인할 수 있습니다."
+            )
         else:
-            st.markdown(f"총 **{len(st.session_state.saved_tables)}개**의 표가 저장되었습니다.")
-            
-            # 저장된 표 목록 (카드 형태로 표시)
+            # 저장된 표 목록
             for i, item in enumerate(st.session_state.saved_tables):
-                # 카드 스타일 컨테이너
-                st.markdown(f"""
-                <div style="
-                    border: 1px solid #e0e0e0;
-                    border-radius: 8px;
-                    padding: 1rem;
-                    margin-bottom: 1rem;
-                    background-color: #ffffff;
-                    box-shadow: 0px 2px 4px rgba(0,0,0,0.1);
-                ">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                        <h4 style="margin: 0; color: #333;">📑 {item['query']}</h4>
-                        <small style="color: #666;">{item['timestamp']}</small>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
                 # 숫자 포맷팅 (SQL & 데이터 탭과 동일한 로직)
                 df_display = item['data'].copy()
                 numeric_cols = df_display.select_dtypes(include=['number']).columns
@@ -2972,52 +3275,144 @@ def render_dashboard_page():
                         if not valid_vals.empty and valid_vals.apply(lambda x: x.is_integer()).all(): 
                             is_integer_like = True
                     format_dict[col] = "{:,.0f}" if is_integer_like else "{:,.2f}"
-                
-                # 전체 데이터 표시 (스크롤 가능)
-                st.dataframe(
-                    df_display.style.format(format_dict), 
-                    use_container_width=True, 
-                    height=300
-                )
-                
-                col1, col2 = st.columns([1, 4])
-                with col1:
-                    if st.button(f"🗑️ 삭제하기", key=f"del_{i}"):
-                        st.session_state.saved_tables.pop(i)
-                        # 파일에 저장 (삭제 반영, 사용자별)
-                        username = st.session_state.get('username')
-                        if username:
-                            save_tables_to_file(st.session_state.saved_tables, username)
-                        st.rerun()
-                
-                st.markdown("---")
+
+                safe_query = html.escape(str(item.get('query') or '제목 없는 분석'))
+                safe_timestamp = html.escape(str(item.get('timestamp') or '저장 시각 없음'))
+                row_count, column_count = df_display.shape
+                table_height = min(280, max(170, 35 * (min(row_count, 7) + 1)))
+
+                with st.container(border=True, key=f"saved_table_card_{i}"):
+                    info_col, action_col = st.columns(
+                        [5, 1],
+                        gap="medium",
+                        vertical_alignment="center"
+                    )
+
+                    with info_col:
+                        st.markdown(f"""
+                        <div class="saved-table-card__title">{safe_query}</div>
+                        <div class="saved-table-card__meta">
+                            {safe_timestamp} · {row_count:,}행 × {column_count:,}열
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    with action_col:
+                        if st.button(
+                            "삭제",
+                            key=f"delete_saved_{i}",
+                            help="이 저장 데이터를 삭제합니다.",
+                            use_container_width=True
+                        ):
+                            st.session_state.saved_tables.pop(i)
+                            st.session_state.pop('ai_analysis_sources', None)
+                            st.session_state.pop('ai_analysis_report', None)
+                            st.session_state.pop('ai_analysis_report_meta', None)
+                            username = st.session_state.get('username')
+                            if username:
+                                save_tables_to_file(st.session_state.saved_tables, username)
+                            st.rerun()
+
+                    st.dataframe(
+                        df_display.style.format(format_dict),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=table_height
+                    )
     
-    # [탭 3] AI 융합 심층 분석
+    # [탭 3] 저장 데이터 종합 분석
     with tab3:
-        st.subheader("🧠 AI 융합 심층 분석")
-        st.caption("저장된 모든 데이터와 시장/뉴스 정보를 결합하여 의미 있는 인사이트를 도출합니다.")
+        saved_table_count = len(st.session_state.saved_tables)
+        render_dashboard_section_header(
+            "AI 분석",
+            "선택한 저장 데이터를 함께 살펴보고 핵심 변화, 리스크, 실행 과제를 정리합니다.",
+            f"{saved_table_count}개 데이터" if saved_table_count else ""
+        )
         
         if not st.session_state.saved_tables:
-            st.info("📭 분석할 데이터가 없습니다. 'SQL & 데이터' 탭에서 표를 저장해주세요.")
-        else:
-            # 사용자 추가 프롬프트 입력창
-            user_additional_prompt = st.text_area(
-                "💭 추가 분석 요청사항 (선택사항)",
-                placeholder="예: 관련 학술 논문을 인용하여 학술적 근거를 제시해줘 / 해당 산업의 최신 트렌드와 시장 동향을 조사하여 데이터와 연계 분석해줘 / 국내외 연구사례를 참고하여 비교 분석해줘",
-                height=100,
-                key="ai_analysis_prompt"
+            render_dashboard_empty_state(
+                "AI 분석을 위한 데이터가 필요합니다",
+                "SQL · 데이터 탭에서 하나 이상의 결과를 저장한 뒤 종합 분석을 시작하세요."
             )
-            
-            analyze_key = f"analyze_{hash(str(st.session_state.saved_tables))}"
-            if st.button("🚀 데이터+시장+뉴스 융합 분석하기", type="primary", use_container_width=True, key=analyze_key):
-                with st.spinner("🤖 시장 트렌드 검색 및 데이터 융합 분석 중..."):
-                    report = generate_comprehensive_report(
-                        st.session_state.saved_tables,
-                        additional_prompt=user_additional_prompt
-                    )
-                    # 보고서 출력 (HTML 직접 렌더링)
-                    import streamlit.components.v1 as components
-                    components.html(report, height=800, scrolling=True)
+        else:
+            source_options = list(range(saved_table_count))
+
+            def format_ai_source(source_index: int) -> str:
+                source_item = st.session_state.saved_tables[source_index]
+                source_df = source_item.get('data', pd.DataFrame())
+                source_title = str(source_item.get('query') or '제목 없는 분석').strip()
+                if len(source_title) > 54:
+                    source_title = f"{source_title[:53]}…"
+                return f"{source_title} · {len(source_df):,}행 × {len(source_df.columns):,}열"
+
+            with st.container(border=True, key="ai_analysis_workspace"):
+                st.markdown("""
+                <div class="ai-workspace__intro">
+                    <div class="ai-workspace__title">분석 설정</div>
+                    <div class="ai-workspace__description">
+                        함께 비교할 저장 데이터를 고르고, 필요한 경우 분석 관점을 덧붙여 주세요.
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                selected_source_indices = st.multiselect(
+                    "분석 대상",
+                    options=source_options,
+                    default=source_options,
+                    format_func=format_ai_source,
+                    key="ai_analysis_sources",
+                    help="종합 분석에 포함할 저장 데이터를 선택하세요."
+                )
+
+                user_additional_prompt = st.text_area(
+                    "분석 요청 (선택)",
+                    placeholder="예: 전년 대비 변동 원인과 다음 분기 리스크를 중심으로 분석해 주세요.",
+                    height=110,
+                    key="ai_analysis_prompt"
+                )
+
+                st.markdown(
+                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개를 내부 데이터에 근거해 종합합니다.</div>',
+                    unsafe_allow_html=True
+                )
+
+                if st.button(
+                    "종합 분석 시작",
+                    type="primary",
+                    use_container_width=True,
+                    key="run_ai_analysis",
+                    disabled=not selected_source_indices
+                ):
+                    selected_tables = [
+                        st.session_state.saved_tables[index]
+                        for index in selected_source_indices
+                    ]
+                    with st.spinner("선택한 데이터를 분석하고 있습니다..."):
+                        report = generate_comprehensive_report(
+                            selected_tables,
+                            additional_prompt=user_additional_prompt
+                        )
+                        st.session_state.ai_analysis_report = report
+                        st.session_state.ai_analysis_report_meta = {
+                            "source_count": len(selected_tables),
+                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                        }
+
+            saved_report = st.session_state.get('ai_analysis_report')
+            if saved_report:
+                report_meta = st.session_state.get('ai_analysis_report_meta', {})
+                safe_report_time = html.escape(str(report_meta.get('created_at', '')))
+                report_source_count = report_meta.get('source_count', 0)
+                st.markdown(f"""
+                <div class="ai-analysis-result-header">
+                    <div class="ai-analysis-result-header__title">분석 결과</div>
+                    <div class="ai-analysis-result-header__meta">
+                        데이터 {report_source_count}개 · {safe_report_time}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                import streamlit.components.v1 as components
+                components.html(saved_report, height=800, scrolling=True)
     
     # [탭 4] 시각화
     with tab4:
@@ -3027,9 +3422,15 @@ def render_dashboard_page():
                 for chart in charts:
                     st.plotly_chart(chart[1], use_container_width=True)
             else:
-                st.info("시각화할 수 있는 데이터가 없습니다.")
+                render_dashboard_empty_state(
+                    "시각화할 수 있는 데이터가 없습니다",
+                    "다른 질문으로 분석하거나 숫자형 데이터가 포함된 결과를 선택해 주세요."
+                )
         else:
-            st.info("💡 위의 입력창에 질문을 입력하면 데이터 시각화가 여기에 표시됩니다.")
+            render_dashboard_empty_state(
+                "시각화할 질문을 입력하세요",
+                "분석 결과에 차트로 표현할 수 있는 데이터가 있으면 이 영역에 자동으로 표시됩니다."
+            )
     
     # 검색 실행
     query_to_process = None
