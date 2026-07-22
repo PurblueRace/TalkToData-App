@@ -844,6 +844,30 @@ st.markdown("""
     div[data-testid="stTextInput"] input {
         background-color: #FFFFFF !important;
     }
+    /* Google-style outline for the main question input only. */
+    div[data-testid="stTextInput"]:has(input[aria-label="질문"]) div[data-testid="stTextInputRootElement"] {
+        height: 60px !important;
+        overflow: visible !important;
+        border-radius: 30px !important;
+    }
+
+    div[data-testid="stTextInput"] input[aria-label="질문"] {
+        border: 1px solid #c4c7c5 !important;
+        box-shadow: 0 1px 6px rgba(32, 33, 36, 0.18) !important;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+    }
+
+    div[data-testid="stTextInput"] input[aria-label="질문"]:hover {
+        border-color: #aeb4bb !important;
+        box-shadow: 0 1px 6px rgba(32, 33, 36, 0.24) !important;
+        transform: none !important;
+    }
+
+    div[data-testid="stTextInput"] input[aria-label="질문"]:focus {
+        border-color: #4285f4 !important;
+        box-shadow: 0 0 0 1px rgba(66, 133, 244, 0.18), 0 1px 6px rgba(32, 33, 36, 0.28) !important;
+        transform: none !important;
+    }
     
     /* Expander 내부 input은 검색창 스타일 적용 안 함 (검색창 CSS 뒤에 배치하여 우선순위 확보) */
     div[data-testid="stExpander"] input,
