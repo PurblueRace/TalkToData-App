@@ -3260,12 +3260,15 @@ def render_dashboard_page():
                     }
                     # 중복 방지
                     if not any(s['sql'] == current_sql_query for s in st.session_state.saved_tables):
-                        st.session_state.saved_tables.append(saved_item)
-                        # 파일에 저장 (사용자별)
+                        candidate_tables = [*st.session_state.saved_tables, saved_item]
                         username = st.session_state.get('username')
-                        if username:
-                            save_tables_to_file(st.session_state.saved_tables, username)
-                        st.success(f"✅ 저장 완료! (현재 {len(st.session_state.saved_tables)}개)")
+                        if not username:
+                            st.error("로그인 정보를 확인할 수 없어 표를 저장하지 못했습니다.")
+                        elif save_tables_to_file(candidate_tables, username):
+                            st.session_state.saved_tables = candidate_tables
+                            st.success(f"✅ 저장 완료! (현재 {len(candidate_tables)}개)")
+                        else:
+                            st.error("표를 영구 저장하지 못했습니다. 기존 보관함은 그대로 유지됩니다.")
                     else:
                         st.warning("⚠️ 이미 저장된 표입니다.")
             
@@ -3338,14 +3341,19 @@ def render_dashboard_page():
                             help="이 저장 데이터를 삭제합니다.",
                             use_container_width=True
                         ):
-                            st.session_state.saved_tables.pop(i)
-                            st.session_state.pop('ai_analysis_sources', None)
-                            st.session_state.pop('ai_analysis_report', None)
-                            st.session_state.pop('ai_analysis_report_meta', None)
+                            candidate_tables = list(st.session_state.saved_tables)
+                            candidate_tables.pop(i)
                             username = st.session_state.get('username')
-                            if username:
-                                save_tables_to_file(st.session_state.saved_tables, username)
-                            st.rerun()
+                            if not username:
+                                st.error("로그인 정보를 확인할 수 없어 저장 데이터를 삭제하지 못했습니다.")
+                            elif save_tables_to_file(candidate_tables, username):
+                                st.session_state.saved_tables = candidate_tables
+                                st.session_state.pop('ai_analysis_sources', None)
+                                st.session_state.pop('ai_analysis_report', None)
+                                st.session_state.pop('ai_analysis_report_meta', None)
+                                st.rerun()
+                            else:
+                                st.error("저장 데이터를 영구 삭제하지 못했습니다. 기존 보관함은 그대로 유지됩니다.")
 
                     st.dataframe(
                         df_display.style.format(format_dict),
