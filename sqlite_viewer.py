@@ -4,7 +4,6 @@ Wireframer/Framer 스타일 대시보드
 """
 
 import streamlit as st
-import sqlite3
 import pandas as pd
 import os
 import re
@@ -12,9 +11,35 @@ import json
 import time
 import io
 import textwrap
+import html
+import hmac
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
+
+from persistent_db import (
+    PersistenceError,
+    backend_label,
+    bootstrap_metadata_from_local,
+    drop_table as db_drop_table,
+    get_schema as db_get_schema,
+    hash_password,
+    initialize_metadata,
+    is_remote_database,
+    list_tables as db_list_tables,
+    load_remote_tables,
+    ping_database,
+    quote_identifier,
+    read_dataframe as db_read_dataframe,
+    remote_authenticate_user,
+    remote_create_user,
+    replace_dataframes as db_replace_dataframes,
+    save_remote_tables,
+    table_columns as db_table_columns,
+    table_exists as db_table_exists,
+    verify_password,
+    write_dataframe as db_write_dataframe,
+)
 
 # 정규화 스크립트 임포트
 try:
@@ -252,6 +277,38 @@ SYSTEM_PROMPT_V2 = """
 
 """
 
+POSTGRES_DIALECT_OVERRIDE = """
+
+[최우선 데이터베이스 규칙 - PostgreSQL]
+
+- 현재 데이터베이스는 SQLite가 아니라 PostgreSQL이다. 앞의 SQLite 문법 예시는 무시한다.
+- 모든 테이블명과 컬럼명은 정확한 대소문자를 보존하도록 반드시 쌍따옴표로 감싼다.
+- 연도는 EXTRACT(YEAR FROM "거래일자"), 월은 TO_CHAR("거래일자", 'YYYY-MM'),
+  월 시작일은 DATE_TRUNC('month', "거래일자")를 사용한다.
+- 현재 날짜는 CURRENT_DATE를 사용한다.
+- strftime(), julianday(), date('now', ...), PRAGMA는 절대 사용하지 않는다.
+- SELECT 또는 읽기 전용 WITH 쿼리 한 개만 생성한다. 데이터 변경 SQL은 절대 생성하지 않는다.
+- 집계하지 않은 SELECT 컬럼은 모두 GROUP BY에 포함한다.
+"""
+
+
+def get_sql_system_prompt() -> str:
+    if is_remote_database():
+        postgres_prompt = SYSTEM_PROMPT_V2.replace(
+            "너는 SQLite 데이터베이스용 SQL 쿼리 생성 전문가다.",
+            "너는 PostgreSQL 데이터베이스용 SQL 쿼리 생성 전문가다.",
+        )
+        postgres_prompt = postgres_prompt.replace(
+            "strftime('%Y', j.\"거래일자\") = strftime('%Y','now')",
+            "EXTRACT(YEAR FROM j.\"거래일자\") = EXTRACT(YEAR FROM CURRENT_DATE)",
+        )
+        postgres_prompt = postgres_prompt.replace(
+            "strftime('%Y-%m', j.\"거래일자\") = '2025-01'",
+            "TO_CHAR(j.\"거래일자\", 'YYYY-MM') = '2025-01'",
+        )
+        return postgres_prompt + POSTGRES_DIALECT_OVERRIDE
+    return SYSTEM_PROMPT_V2
+
 # Few-shot 예시 (비용 집계 시 계정 분류 필터링 적용)
 
 FEW_SHOT_EXAMPLES = """
@@ -299,7 +356,7 @@ A: SELECT
   p."제품코드", 
   p."제품명", 
   SUM(b."수량" * m."단가") AS "단위원가"
-FROM BOM마스터 b
+FROM "BOM마스터" b
 LEFT JOIN 제품마스터 p ON b."제품코드" = p."제품코드"
 LEFT JOIN 원재료마스터 m ON b."원재료코드" = m."원재료코드"
 GROUP BY p."제품코드", p."제품명"
@@ -318,7 +375,7 @@ Cost AS (
   SELECT 
     p."제품코드",
     SUM(b."수량" * m."단가") AS "단위원가"
-  FROM BOM마스터 b
+  FROM "BOM마스터" b
   LEFT JOIN 제품마스터 p ON b."제품코드" = p."제품코드"
   LEFT JOIN 원재료마스터 m ON b."원재료코드" = m."원재료코드"
   GROUP BY p."제품코드"
@@ -843,6 +900,30 @@ st.markdown("""
     /* input만 배경색 유지 */
     div[data-testid="stTextInput"] input {
         background-color: #FFFFFF !important;
+    }
+    /* Google-style outline for the main question input only. */
+    div[data-testid="stTextInput"]:has(input[aria-label="질문"]) div[data-testid="stTextInputRootElement"] {
+        height: 60px !important;
+        overflow: visible !important;
+        border-radius: 30px !important;
+    }
+
+    div[data-testid="stTextInput"] input[aria-label="질문"] {
+        border: 1px solid #c4c7c5 !important;
+        box-shadow: 0 1px 6px rgba(32, 33, 36, 0.18) !important;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+    }
+
+    div[data-testid="stTextInput"] input[aria-label="질문"]:hover {
+        border-color: #aeb4bb !important;
+        box-shadow: 0 1px 6px rgba(32, 33, 36, 0.24) !important;
+        transform: none !important;
+    }
+
+    div[data-testid="stTextInput"] input[aria-label="질문"]:focus {
+        border-color: #4285f4 !important;
+        box-shadow: 0 0 0 1px rgba(66, 133, 244, 0.18), 0 1px 6px rgba(32, 33, 36, 0.28) !important;
+        transform: none !important;
     }
     
     /* Expander 내부 input은 검색창 스타일 적용 안 함 (검색창 CSS 뒤에 배치하여 우선순위 확보) */
@@ -1376,95 +1457,366 @@ st.markdown("""
     }
     
     /* ==========================================
-       탭 호버 효과 - 사이드바 스타일 동일 적용
+       Dashboard workspace tabs
        ========================================== */
-    
-    /* 탭 버튼 기본 스타일 */
-    button[data-baseweb="tab"] {
-        padding: 0.75rem 1.5rem !important;
-        margin: 0 0.25rem !important;
-        border-radius: 0 !important;
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tablist"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] div[data-baseweb="tab-list"] {
+        display: flex !important;
+        width: 100% !important;
+        gap: 0.25rem !important;
+        padding: 0.25rem !important;
+        border: 1px solid #e4e7ec !important;
+        border-radius: 12px !important;
+        background: #f4f5f7 !important;
+        box-sizing: border-box !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"] {
+        display: flex !important;
+        flex: 1 1 0 !important;
+        align-items: center !important;
+        justify-content: center !important;
+        min-height: 42px !important;
+        margin: 0 !important;
+        padding: 0.625rem 1rem !important;
         border: none !important;
-        border-bottom: 3px solid transparent !important;
+        border-radius: 9px !important;
         background: transparent !important;
-        color: #475569 !important;
-        font-size: 0.95rem !important;
-        font-weight: 500 !important;
-        transition: all 0.25s ease !important;
+        color: #667085 !important;
+        font-size: 0.9rem !important;
+        line-height: 1.2 !important;
+        font-weight: 600 !important;
+        box-shadow: none !important;
+        transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease !important;
         cursor: pointer !important;
     }
-    
-    /* 호버 시 빨간색 + 밑줄 */
-    button[data-baseweb="tab"]:hover {
-        color: #dc2626 !important;
-        border-bottom: 3px solid #dc2626 !important;
-        background: transparent !important;
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"] p,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"] span,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"] p,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"] span {
+        margin: 0 !important;
+        color: inherit !important;
+        white-space: nowrap !important;
     }
-    
-    /* 선택된 탭 - 진한 빨간색 + 굵은 밑줄 */
-    button[data-baseweb="tab"][aria-selected="true"] {
-        color: #b91c1c !important;
-        border-bottom: 3px solid #b91c1c !important;
-        font-weight: 700 !important;
-        background: transparent !important;
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"]:hover,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
+        background: #eaecf0 !important;
+        color: #344054 !important;
     }
-    
-    /* 탭 컨테이너 */
-    div[data-baseweb="tab-list"] {
-        border-bottom: 1px solid #e5e7eb !important;
-        background: transparent !important;
-        gap: 0 !important;
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"]:focus-visible,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"]:focus-visible {
+        outline: 2px solid #98a2b3 !important;
+        outline-offset: 2px !important;
     }
-    
-    /* 탭 패널 */
-    div[data-baseweb="tab-panel"] {
-        padding-top: 2rem !important;
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"][aria-selected="true"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {
+        background: #ffffff !important;
+        color: #101828 !important;
+        font-weight: 650 !important;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08), 0 1px 3px rgba(16, 24, 40, 0.05) !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] .react-aria-SelectionIndicator,
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [data-baseweb="tab-highlight"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [data-baseweb="tab-border"] {
+        display: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tabpanel"],
+    section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] div[data-baseweb="tab-panel"] {
+        padding-top: 1.25rem !important;
+    }
+
+    .dashboard-empty-state {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.875rem;
+        padding: 1rem 1.125rem;
+        border: 1px solid #e4e7ec;
+        border-radius: 14px;
+        background: #fbfcfd;
+        color: #344054;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+    }
+
+    .dashboard-empty-state__marker {
+        width: 0.625rem;
+        height: 0.625rem;
+        margin-top: 0.35rem;
+        flex: 0 0 auto;
+        border-radius: 999px;
+        background: #475467;
+        box-shadow: 0 0 0 4px #eef2f6;
+    }
+
+    .dashboard-empty-state__title {
+        color: #1d2939;
+        font-size: 0.925rem;
+        line-height: 1.4;
+        font-weight: 650;
+    }
+
+    .dashboard-empty-state__description {
+        margin-top: 0.2rem;
+        color: #667085;
+        font-size: 0.875rem;
+        line-height: 1.55;
+    }
+
+    .dashboard-section-header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 1.5rem;
+        margin: 0.125rem 0 1.125rem;
+    }
+
+    .dashboard-section-header__title {
+        color: #101828;
+        font-size: 1.25rem;
+        line-height: 1.35;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+
+    .dashboard-section-header__description {
+        max-width: 42rem;
+        margin-top: 0.3rem;
+        color: #667085;
+        font-size: 0.875rem;
+        line-height: 1.55;
+    }
+
+    .dashboard-section-header__meta {
+        flex: 0 0 auto;
+        padding: 0.375rem 0.625rem;
+        border: 1px solid #e4e7ec;
+        border-radius: 8px;
+        background: #f9fafb;
+        color: #475467;
+        font-size: 0.78rem;
+        line-height: 1;
+        font-weight: 650;
+        white-space: nowrap;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-saved_table_card_"] {
+        margin-bottom: 0.875rem;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-saved_table_card_"] [data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 1rem 1.125rem 1.125rem !important;
+        border: 1px solid #e4e7ec !important;
+        border-radius: 14px !important;
+        background: #ffffff !important;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+    }
+
+    .saved-table-card__title {
+        overflow: hidden;
+        color: #1d2939;
+        font-size: 1rem;
+        line-height: 1.45;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .saved-table-card__meta {
+        margin-top: 0.25rem;
+        color: #667085;
+        font-size: 0.78rem;
+        line-height: 1.4;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-saved_table_card_"] [data-testid="stDataFrame"] {
+        overflow: hidden;
+        border: 1px solid #eaecf0;
+        border-radius: 10px;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-delete_saved_"] button {
+        min-height: 2.25rem !important;
+        border: 1px solid #e4e7ec !important;
+        border-radius: 9px !important;
+        background: #ffffff !important;
+        color: #b42318 !important;
+        font-size: 0.82rem !important;
+        font-weight: 600 !important;
+        box-shadow: none !important;
+        transform: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) div[class*="st-key-delete_saved_"] button:hover {
+        border-color: #fda29b !important;
+        background: #fff5f4 !important;
+        color: #912018 !important;
+        transform: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_workspace [data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 1.125rem !important;
+        border: 1px solid #e4e7ec !important;
+        border-radius: 14px !important;
+        background: #fbfcfd !important;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+    }
+
+    .ai-workspace__intro {
+        margin-bottom: 0.25rem;
+    }
+
+    .ai-workspace__title {
+        color: #1d2939;
+        font-size: 0.95rem;
+        line-height: 1.4;
+        font-weight: 650;
+    }
+
+    .ai-workspace__description,
+    .ai-workspace__selection-note {
+        margin-top: 0.2rem;
+        color: #667085;
+        font-size: 0.8rem;
+        line-height: 1.5;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_prompt textarea {
+        border: 1px solid #d0d5dd !important;
+        border-radius: 10px !important;
+        background: #ffffff !important;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_prompt textarea:focus {
+        border-color: #667085 !important;
+        box-shadow: 0 0 0 3px rgba(71, 84, 103, 0.12) !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_sources [data-baseweb="tag"] {
+        border: 1px solid #d0d5dd !important;
+        background: #eef2f6 !important;
+        color: #344054 !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_sources [data-baseweb="tag"] span,
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-ai_analysis_sources [data-baseweb="tag"] svg {
+        color: #475467 !important;
+        fill: currentColor !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-run_ai_analysis button {
+        min-height: 2.75rem !important;
+        border: 1px solid #101828 !important;
+        border-radius: 10px !important;
+        background: #101828 !important;
+        color: #ffffff !important;
+        font-weight: 650 !important;
+        box-shadow: none !important;
+        transform: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-run_ai_analysis button:hover {
+        border-color: #344054 !important;
+        background: #344054 !important;
+        color: #ffffff !important;
+        transform: none !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-run_ai_analysis button:disabled {
+        border-color: #d0d5dd !important;
+        background: #eaecf0 !important;
+        color: #98a2b3 !important;
+    }
+
+    .ai-analysis-result-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin: 1.5rem 0 0.75rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid #eaecf0;
+    }
+
+    .ai-analysis-result-header__title {
+        color: #101828;
+        font-size: 1rem;
+        line-height: 1.4;
+        font-weight: 700;
+    }
+
+    .ai-analysis-result-header__meta {
+        color: #667085;
+        font-size: 0.78rem;
+        line-height: 1.4;
+        text-align: right;
+    }
+
+    @media (max-width: 640px) {
+        .dashboard-section-header,
+        .ai-analysis-result-header {
+            align-items: flex-start;
+            flex-direction: column;
+            gap: 0.625rem;
+        }
+
+        section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tablist"],
+        section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] div[data-baseweb="tab-list"] {
+            overflow-x: auto !important;
+        }
+
+        section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tab"],
+        section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] button[data-baseweb="tab"] {
+            flex: 1 0 auto !important;
+            min-width: 7rem !important;
+            padding-inline: 0.75rem !important;
+        }
     }
     </style>
  """, unsafe_allow_html=True)
 
 
 def check_database():
-    """데이터베이스 파일 존재 확인"""
-    if not os.path.exists(DB_PATH):
-        st.error(f"⚠️ '{DB_PATH}' 파일을 찾을 수 없습니다.")
-        st.info("💡 먼저 `python setup_db.py`를 실행하여 데이터베이스를 생성하세요.")
+    """로컬 또는 영구 데이터베이스 연결 확인"""
+    if is_remote_database() and st.session_state.get("_persistent_store_ready"):
+        return True
+    try:
+        ping_database(DB_PATH)
+        if is_remote_database():
+            initialize_metadata()
+            bootstrap_metadata_from_local(SCRIPT_DIR / "config.json", SCRIPT_DIR / "users")
+            if not db_list_tables(DB_PATH):
+                st.error("Supabase 연결은 성공했지만 데이터 테이블이 아직 없습니다.")
+                st.info("먼저 `migrate_to_supabase.py`를 한 번 실행해 기존 제조업 데이터를 옮겨주세요.")
+                st.stop()
+            st.session_state["_persistent_store_ready"] = True
+    except PersistenceError as exc:
+        st.error(f"데이터 저장소 연결 오류: {exc}")
         st.stop()
     return True
 
 
-def get_db_connection():
-    """데이터베이스 연결"""
-    return sqlite3.connect(DB_PATH)
+def read_sql_query(sql: str, params=None) -> pd.DataFrame:
+    """Backend-neutral pandas query helper."""
+    return db_read_dataframe(sql, DB_PATH, params=params)
 
 
 def get_db_schema() -> Dict[str, List[str]]:
     """데이터베이스 스키마 정보 가져오기"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = [row[0] for row in cursor.fetchall()]
-    
-    schema = {}
-    for table in tables:
-        cursor.execute(f"PRAGMA table_info({table})")
-        columns = [row[1] for row in cursor.fetchall()]
-        schema[table] = columns
-    
-    conn.close()
-    return schema
+    return db_get_schema(DB_PATH)
 
 
 def get_all_tables() -> List[str]:
     """데이터베이스의 모든 테이블 목록 가져오기"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-        tables = [row[0] for row in cursor.fetchall()]
-        conn.close()
-        return tables
+        return db_list_tables(DB_PATH)
     except Exception as e:
         st.error(f"테이블 목록 조회 오류: {e}")
         return []
@@ -1473,11 +1825,7 @@ def get_all_tables() -> List[str]:
 def delete_table(table_name: str) -> bool:
     """데이터베이스에서 테이블 삭제"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        conn.commit()
-        conn.close()
+        db_drop_table(table_name, DB_PATH)
         return True
     except Exception as e:
         st.error(f"테이블 삭제 오류 ({table_name}): {e}")
@@ -1550,7 +1898,7 @@ SQL:"""
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT_V2},
+                {"role": "system", "content": get_sql_system_prompt()},
                 {"role": "user", "content": user_prompt}
             ],
             max_completion_tokens=500
@@ -1663,8 +2011,7 @@ def format_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
 def execute_sql_query(sql_query: str) -> pd.DataFrame:
     """SQL 쿼리를 실행하고 DataFrame 반환"""
     try:
-        df = pd.read_sql_query(sql_query, get_db_connection())
-        return df
+        return db_read_dataframe(sql_query, DB_PATH)
     except Exception as e:
         st.error(f"쿼리 실행 오류: {str(e)}")
         return pd.DataFrame()
@@ -1674,13 +2021,10 @@ def get_schema_context() -> str:
     """config.json의 required_columns, column_keywords, managed_tables만 사용하여 스키마 정보 반환"""
     try:
         config = load_config()
-        conn = get_db_connection()
-        cursor = conn.cursor()
         
         # managed_tables 가져오기
         managed_tables = get_managed_tables(config) if get_managed_tables else []
         if not managed_tables:
-            conn.close()
             return "관리되는 테이블이 없습니다. config.json의 managed_tables를 확인하세요.\n\n"
         
         schema_parts = []
@@ -1703,7 +2047,6 @@ def get_schema_context() -> str:
                 schema_parts.append(f"  {keyword_type}: {', '.join(keywords)}")
             schema_parts.append("")
         
-        conn.close()
         return "\n".join(schema_parts) if schema_parts else "스키마 정보가 없습니다.\n\n"
     except Exception as e:
         return f"스키마 정보 오류: {e}\n\n"
@@ -2070,9 +2413,8 @@ def calculate_table_height(df: pd.DataFrame) -> int:
 # ============================================================
 # 로그인 및 사용자 관리
 # ============================================================
-USERS_DIR = Path("users")
+USERS_DIR = SCRIPT_DIR / "users"
 USERS_DB_FILE = USERS_DIR / "users_db.json"
-CURRENT_USER_FILE = USERS_DIR / "current_user.json"
 
 def init_users_directory():
     """사용자 디렉토리 초기화"""
@@ -2101,21 +2443,44 @@ def authenticate_user(username: str, password: str) -> bool:
     """사용자 인증"""
     if not username or not password:
         return False
+    if is_remote_database():
+        try:
+            return remote_authenticate_user(username, password)
+        except PersistenceError as exc:
+            st.error(f"로그인 저장소 오류: {exc}")
+            return False
+
     users_db = load_users_db()
     if username in users_db:
-        # 간단한 비밀번호 검증 (실제 운영 시에는 해시 사용 권장)
-        return users_db[username].get('password') == password
+        record = users_db[username]
+        encoded = record.get("password_hash")
+        if encoded:
+            return verify_password(password, encoded)
+
+        # 기존 평문 레코드는 로그인 성공 시 즉시 해시 형식으로 변환한다.
+        if hmac.compare_digest(str(record.get("password", "")), password):
+            record["password_hash"] = hash_password(password)
+            record.pop("password", None)
+            save_users_db(users_db)
+            return True
     return False
 
 def create_user(username: str, password: str) -> bool:
     """새 사용자 생성"""
     if not username or not password:
         return False
+    if is_remote_database():
+        try:
+            return remote_create_user(username, password)
+        except PersistenceError as exc:
+            st.error(f"회원정보 저장소 오류: {exc}")
+            return False
+
     users_db = load_users_db()
     if username in users_db:
         return False  # 이미 존재
     users_db[username] = {
-        'password': password,  # 실제 운영 시에는 bcrypt 등으로 해시 저장
+        'password_hash': hash_password(password),
         'created_at': datetime.now().isoformat()
     }
     if save_users_db(users_db):
@@ -2128,48 +2493,15 @@ def get_user_data_path(username: str, filename: str) -> Path:
     """사용자별 데이터 파일 경로 반환"""
     return USERS_DIR / username / filename
 
-def save_current_user(username: str) -> bool:
-    """현재 로그인한 사용자 저장"""
-    try:
-        USERS_DIR.mkdir(exist_ok=True)
-        with open(CURRENT_USER_FILE, 'w', encoding='utf-8') as f:
-            json.dump({"username": username, "logged_in_at": datetime.now().isoformat()}, f, ensure_ascii=False)
-        return True
-    except Exception as e:
-        return False
-
-def load_current_user() -> str:
-    """저장된 현재 사용자 로드"""
-    try:
-        if CURRENT_USER_FILE.exists():
-            with open(CURRENT_USER_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return data.get('username', '')
-        return ''
-    except Exception:
-        return ''
-
-def clear_current_user() -> bool:
-    """로그인 상태 파일 삭제"""
-    try:
-        if CURRENT_USER_FILE.exists():
-            CURRENT_USER_FILE.unlink()
-        return True
-    except Exception:
-        return False
-
 # ============================================================
 # 저장된 표 파일 관리 (사용자별)
 # ============================================================
 def save_tables_to_file(saved_tables: List[Dict], username: str) -> bool:
-    """사용자별로 저장된 표 목록을 JSON 파일에 저장"""
+    """사용자별 저장 표를 PostgreSQL 또는 로컬 개발 파일에 저장"""
     try:
         if not username:
             return False
-        user_file = get_user_data_path(username, "saved_tables.json")
-        # 디렉토리 생성
-        user_file.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # DataFrame을 CSV 문자열로 변환하여 저장
         tables_data = []
         for item in saved_tables:
@@ -2180,24 +2512,33 @@ def save_tables_to_file(saved_tables: List[Dict], username: str) -> bool:
                 "data_csv": item["data"].to_csv(index=False) if not item["data"].empty else ""
             }
             tables_data.append(table_data)
-        
+
+        if is_remote_database():
+            save_remote_tables(username, tables_data)
+            return True
+
+        user_file = get_user_data_path(username, "saved_tables.json")
+        user_file.parent.mkdir(parents=True, exist_ok=True)
         with open(user_file, 'w', encoding='utf-8') as f:
             json.dump(tables_data, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
+        st.error(f"저장된 표 보관 오류: {e}")
         return False
 
 def load_tables_from_file(username: str) -> List[Dict]:
-    """사용자별 JSON 파일에서 저장된 표 목록 로드"""
+    """사용자별 저장 표를 PostgreSQL 또는 로컬 개발 파일에서 로드"""
     try:
         if not username:
             return []
-        user_file = get_user_data_path(username, "saved_tables.json")
-        if not user_file.exists():
-            return []
-        
-        with open(user_file, 'r', encoding='utf-8') as f:
-            tables_data = json.load(f)
+        if is_remote_database():
+            tables_data = load_remote_tables(username)
+        else:
+            user_file = get_user_data_path(username, "saved_tables.json")
+            if not user_file.exists():
+                return []
+            with open(user_file, 'r', encoding='utf-8') as f:
+                tables_data = json.load(f)
         
         # CSV 문자열을 DataFrame으로 변환
         saved_tables = []
@@ -2216,11 +2557,25 @@ def load_tables_from_file(username: str) -> List[Dict]:
         
         return saved_tables
     except Exception as e:
+        st.error(f"저장된 표 불러오기 오류: {e}")
         return []
 
 # ============================================================
 # 로그인 페이지 렌더링
 # ============================================================
+def is_signup_allowed() -> bool:
+    """Disable public registration by default on the deployed app."""
+    if not is_remote_database():
+        return True
+    value = os.getenv("ALLOW_SIGNUP")
+    if value is None:
+        try:
+            value = st.secrets.get("ALLOW_SIGNUP")
+        except Exception:
+            value = None
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def render_login_page():
     """로그인 페이지"""
     st.markdown("<h1 style='text-align: center; margin-bottom: 3rem;'>🔐 로그인</h1>", unsafe_allow_html=True)
@@ -2241,8 +2596,6 @@ def render_login_page():
             if authenticate_user(username, password):
                 st.session_state['logged_in'] = True
                 st.session_state['username'] = username
-                # 로그인 상태 파일에 저장
-                save_current_user(username)
                 # 사용자별 데이터 로드
                 st.session_state.saved_tables = load_tables_from_file(username)
                 st.success("✅ 로그인 성공!")
@@ -2252,18 +2605,21 @@ def render_login_page():
     
     with tab2:
         st.markdown("### 회원가입")
+        signup_allowed = is_signup_allowed()
+        if not signup_allowed:
+            st.info("현재 회원가입은 비활성화되어 있습니다. 관리자에게 계정 생성을 요청해주세요.")
         st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)  # 간격 추가
         
-        new_username = st.text_input("새 사용자명", key="signup_username")
+        new_username = st.text_input("새 사용자명", key="signup_username", disabled=not signup_allowed)
         st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)  # 간격 추가
         
-        new_password = st.text_input("새 비밀번호", type="password", key="signup_password")
+        new_password = st.text_input("새 비밀번호", type="password", key="signup_password", disabled=not signup_allowed)
         st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)  # 간격 추가
         
-        confirm_password = st.text_input("비밀번호 확인", type="password", key="signup_confirm")
+        confirm_password = st.text_input("비밀번호 확인", type="password", key="signup_confirm", disabled=not signup_allowed)
         st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)  # 간격 추가
         
-        if st.button("회원가입", type="primary", use_container_width=True):
+        if st.button("회원가입", type="primary", use_container_width=True, disabled=not signup_allowed):
             if not new_username or not new_password:
                 st.error("❌ 사용자명과 비밀번호를 입력해주세요.")
             elif new_password != confirm_password:
@@ -2295,10 +2651,10 @@ def init_session_state():
 
 
 # ============================================================
-# 2. [신규] 시장/뉴스 융합 심층 분석 함수
+# 2. 저장 데이터 종합 분석 함수
 # ============================================================
 def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: str = "", custom_system_prompt: str = None) -> str:
-    """저장된 여러 표 + 시장/뉴스 정보를 융합한 심층 보고서 생성 (HTML 카드 스타일 적용)"""
+    """저장된 여러 표를 종합한 경영 분석 보고서를 생성합니다."""
     global client
     
     if not saved_tables:
@@ -2321,37 +2677,20 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
              combined_data_context += f"- 주요 수치 통계: {', '.join(stats)}\n"
         combined_data_context += "-" * 50 + "\n"
 
-    # 데이터에서 키워드 추출 (외부 검색용)
-    keywords = []
-    for item in saved_tables:
-        query = item.get('query', '')
-        df = item['data']
-        # 컬럼명에서 키워드 추출
-        for col in df.columns:
-            if any(word in str(col) for word in ['부서', '산업', '제품', '프로젝트', '계정', '거래처']):
-                keywords.append(str(col))
-        # 쿼리에서 키워드 추출
-        if query:
-            keywords.append(query)
-    
-    keyword_str = ", ".join(list(set(keywords))[:10])  # 중복 제거 후 상위 10개
-    
-    # 2. 시스템 프롬프트: HTML/CSS 스타일링 전문가 역할 부여 + 외부 데이터 검색 요구
+    # 2. 시스템 프롬프트: 제공된 데이터에 근거한 간결한 HTML 보고서
     if custom_system_prompt:
         system_prompt = custom_system_prompt
     else:
-        system_prompt = f"""
-    당신은 대기업 최고 전략 책임자(CSO)이자 UI/UX 디자인 감각이 뛰어난 데이터 분석가입니다.
-    
-    **매우 중요한 요구사항:**
-    1. 반드시 **실제 외부 데이터**를 검색하여 활용해야 합니다. 가상의 정보를 만들어내지 마세요.
-    2. 분석에 사용한 **모든 기사, 논문, 연구의 출처를 명확히 명시**해야 합니다 (제목, 출처, 날짜 등).
-    3. 보고서는 **최소 2000단어 이상**으로 매우 상세하고 깊이 있게 작성해야 합니다.
-    4. 각 섹션은 충분히 길고 구체적인 내용을 포함해야 합니다.
-    5. 출력 결과는 **반드시 세련된 HTML 포맷**이어야 합니다. Markdown을 쓰지 마십시오.
-    
-    현재 분석 주제 관련 키워드: {keyword_str}
-    이 키워드들을 기반으로 실제 최신 뉴스, 산업 리포트, 학술 논문, 시장 조사 자료를 검색하여 활용하세요.
+        system_prompt = """
+    당신은 경영진이 빠르게 판단할 수 있도록 복잡한 표를 명료하게 정리하는 데이터 분석가입니다.
+
+    다음 원칙을 반드시 지키세요.
+    1. 제공된 저장 데이터만 근거로 사용하고, 외부 검색을 했다고 주장하거나 확인되지 않은 사실을 만들지 마세요.
+    2. 데이터에서 직접 확인되는 사실과 분석적 해석을 명확히 구분하세요.
+    3. 핵심 결론을 먼저 제시하고 전체 분량은 약 800~1200단어로 제한하세요.
+    4. 결과는 Markdown이 아닌 순수 HTML만 출력하세요.
+    5. 이모지, 그라데이션, 색상 배지, 강한 그림자, 과도한 강조색을 사용하지 마세요.
+    6. 흰 배경, 얇은 회색 구분선, 단일 열 구조로 읽기 쉬운 보고서를 만드세요.
     """
 
     # 3. 사용자 프롬프트: 구체적인 디자인 가이드라인 제공
@@ -2362,37 +2701,21 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
     표 데이터는 분석의 핵심 근거이며, 모든 인사이트는 이 데이터에서 도출되어야 합니다.
     
     **필수 요구사항:**
-    1. **실제 외부 데이터 검색 필수**: 다음 주제들에 대해 실제 최신 정보를 검색하여 활용하세요:
-       - 관련 산업의 최신 트렌드 및 시장 동향
-       - 업계 뉴스 및 경제 리포트
-       - 관련 학술 논문 및 연구 결과
-       - 벤치마킹 데이터 및 경쟁사 분석
-       
-    2. **출처 명시 필수**: 모든 외부 인용 자료는 다음 형식으로 명시해야 합니다:
-       - 기사: "제목" (출판사/매체, 발행일)
-       - 논문/연구: "연구 제목" (저자, 학술지/기관, 발행연도)
-       - 리포트: "보고서 제목" (기관명, 발행연도)
-       
-    3. **보고서 길이**: 최소 2000단어 이상의 상세한 분석이어야 합니다.
-    
-    4. **상세한 내용 요구**:
-       - 데이터 융합 섹션: 표 간의 연관성을 깊이 있게 분석하고, 수치의 의미를 상세히 설명
-       - 시장 동향 섹션: 실제 검색한 외부 자료를 기반으로 최소 3개 이상의 구체적인 시장 트렌드 제시
-       - 핵심 리스크: 각 리스크를 3-4줄 이상 상세히 설명하고, 발생 가능성 및 영향도 분석 포함
-       - 성장 기회: 각 기회를 3-4줄 이상 상세히 설명하고, 실현 가능성 및 예상 효과 포함
-       - C-Level 실행 전략: 각 전략을 5-7줄 이상의 매우 구체적이고 실행 가능한 단계별 액션 플랜으로 작성
-         * 각 전략은 다음을 포함해야 함: 구체적 실행 단계, 예상 일정, 필요 자원, 담당 부서/인력, 예상 비용, 성공 지표(KPI), 리스크 관리 방안
+    1. 제공된 표의 수치와 관계를 우선 분석하고 중요한 변화나 이상 징후를 구체적으로 설명하세요.
+    2. 확인 가능한 데이터 사실과 그 사실에서 도출한 해석을 구분하세요.
+    3. 핵심 요약 3개, 데이터 근거, 주요 리스크와 기회, 실행 제안 순서로 구성하세요.
+    4. 실행 제안에는 우선순위, 담당 역할, 확인할 지표를 포함하되 데이터로 뒷받침되지 않는 수치를 만들지 마세요.
+    5. 전체 분량은 약 800~1200단어로 제한하고 반복 설명을 피하세요.
        
     {additional_context}
     
     [디자인 요구사항]
-    1. 전체를 감싸는 메인 카드는 흰색 배경, 둥근 모서리(16px), 부드러운 그림자(box-shadow)를 가질 것.
-    2. 제목은 그라데이션 텍스트나 진한 네이비색을 사용하여 강조할 것.
-    3. 각 섹션(데이터 융합, 뉴스 분석, 리스크/기회, 실행 전략)은 구분선이나 연한 회색 박스로 구분할 것.
-    4. 'Risk'는 붉은 계열 배경의 뱃지 스타일, 'Opportunity'는 푸른 계열 배경의 뱃지 스타일을 적용할 것.
+    1. 흰색 배경, 12px 모서리, 얇은 #e4e7ec 테두리의 단일 열 구조를 사용할 것.
+    2. 제목은 단색 #101828, 본문은 #344054, 보조 문구는 #667085를 사용할 것.
+    3. 각 섹션은 배경색 카드 대신 충분한 여백과 얇은 구분선으로 나눌 것.
+    4. 이모지, 그라데이션, 색상 배지, 강한 그림자와 과도한 강조색을 사용하지 말 것.
     5. 모든 텍스트는 가독성을 위해 적절한 줄간격(line-height: 1.6)을 유지할 것.
     6. **절대 Markdown 코드 블록(```html)을 사용하지 말고, 순수 HTML 코드만 출력할 것.**
-    7. 출처는 각 섹션 하단에 작은 글씨로 명시하거나, 별도의 "참고문헌" 섹션을 추가할 것.
 
     [분석 대상 데이터]
     {combined_data_context}
@@ -2540,6 +2863,31 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
     </div>
     """
 
+    # 레거시 예시 대신 실제 모델에는 간결하고 중립적인 최종 프롬프트만 전달
+    user_prompt = f"""
+    아래 저장 데이터를 바탕으로 경영진용 종합 분석 보고서를 작성하세요.
+
+    [분석 대상 데이터]
+    {combined_data_context}
+
+    {additional_context}
+
+    [내용 구성]
+    1. 핵심 요약: 가장 중요한 결론 3개
+    2. 데이터 근거: 표 사이의 관계, 주요 수치, 변화 또는 이상 징후
+    3. 리스크와 기회: 데이터에서 합리적으로 도출할 수 있는 항목
+    4. 실행 제안: 우선순위, 담당 역할, 확인할 지표가 포함된 구체적인 다음 단계
+
+    [출력 규칙]
+    - 외부 기사, 뉴스, 논문을 검색하거나 인용했다고 주장하지 말고 제공된 데이터만 분석할 것.
+    - 확인 가능한 데이터 사실과 분석적 해석을 명확히 구분할 것.
+    - 이모지, 그라데이션 제목, 번호/상태 배지, 강한 색상 패널을 모두 제거할 것.
+    - 흰 배경의 단일 열 레이아웃, #e4e7ec 구분선, 10~12px 모서리를 사용할 것.
+    - 리스크와 기회는 중립적인 목록과 얇은 구분선으로 표현할 것.
+    - 제목과 항목명을 자연스러운 한국어로 통일하고 전체 분량은 800~1200단어로 제한할 것.
+    - Markdown 코드 블록 없이 순수 HTML만 반환할 것.
+    """
+
     try:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -2565,31 +2913,27 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
         
         return html_content
     except Exception as e:
-        return f"<div style='color: red; padding: 1rem;'>분석 중 오류 발생: {_format_openai_exception(e)}</div>"
+        safe_error = html.escape(_format_openai_exception(e))
+        return (
+            "<div style='padding:16px 18px;border:1px solid #e4e7ec;border-radius:12px;"
+            "background:#f9fafb;color:#475467;font-family:Pretendard,sans-serif;font-size:14px;'>"
+            f"분석을 완료하지 못했습니다. {safe_error}</div>"
+        )
 
 
 def check_table_exists(table_name: str) -> bool:
     """테이블 존재 여부 확인"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-        exists = cursor.fetchone() is not None
-        conn.close()
-        return exists
-    except:
+        return db_table_exists(table_name, DB_PATH)
+    except Exception:
         return False
 
 
 def fetch_journal_entries():
     """전표내역 데이터 조회 (JOIN 포함)"""
     try:
-        conn = get_db_connection()
-        
         # 정규화된 테이블(전표내역)이 있는지 확인
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='전표내역'")
-        is_normalized = cursor.fetchone() is not None
+        is_normalized = check_table_exists("전표내역")
         
         if is_normalized:
             query = """
@@ -2612,8 +2956,7 @@ def fetch_journal_entries():
             # 기존 '회계전표' 테이블 조회 (백업용)
             query = "SELECT * FROM 회계전표 ORDER BY 거래일자 DESC, 전표번호"
         
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        df = db_read_dataframe(query, DB_PATH)
         
         # 숫자 포맷팅 적용
         df = format_numeric_columns(df)
@@ -2627,7 +2970,6 @@ def fetch_journal_entries():
 def fetch_clients():
     """거래처 데이터 조회"""
     try:
-        conn = get_db_connection()
         # 정규화된 '거래처' 테이블 우선 조회
         if check_table_exists('거래처'):
             query = "SELECT * FROM 거래처 ORDER BY 거래처명"
@@ -2636,8 +2978,7 @@ def fetch_clients():
         else:
             return pd.DataFrame()
             
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        df = db_read_dataframe(query, DB_PATH)
         
         # 숫자 포맷팅 적용
         df = format_numeric_columns(df)
@@ -2651,7 +2992,6 @@ def fetch_clients():
 def fetch_accounts():
     """계정과목 데이터 조회"""
     try:
-        conn = get_db_connection()
         # 정규화된 '계정과목' 테이블 우선 조회
         if check_table_exists('계정과목'):
             query = "SELECT * FROM 계정과목 ORDER BY 계정코드"
@@ -2660,8 +3000,7 @@ def fetch_accounts():
         else:
             return pd.DataFrame()
             
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        df = db_read_dataframe(query, DB_PATH)
         
         # 숫자 포맷팅 적용
         df = format_numeric_columns(df)
@@ -2675,7 +3014,6 @@ def fetch_accounts():
 def fetch_departments():
     """부서 데이터 조회"""
     try:
-        conn = get_db_connection()
         # 정규화된 '부서' 테이블 우선 조회
         if check_table_exists('부서'):
             query = "SELECT * FROM 부서 ORDER BY 부서코드"
@@ -2684,8 +3022,7 @@ def fetch_departments():
         else:
             return pd.DataFrame()
             
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        df = db_read_dataframe(query, DB_PATH)
         
         # 숫자 포맷팅 적용
         df = format_numeric_columns(df)
@@ -2698,17 +3035,50 @@ def fetch_departments():
 def fetch_projects():
     """프로젝트 데이터 조회"""
     try:
-        conn = get_db_connection()
         if check_table_exists('프로젝트'):
             query = "SELECT * FROM 프로젝트 ORDER BY 프로젝트코드"
-            df = pd.read_sql_query(query, conn)
-            conn.close()
+            df = db_read_dataframe(query, DB_PATH)
             df = format_numeric_columns(df)
             return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"프로젝트 조회 오류: {e}")
         return pd.DataFrame()
+
+
+def render_dashboard_empty_state(title: str, description: str) -> None:
+    """Render a neutral empty-state card inside the dashboard workspace."""
+    safe_title = html.escape(title)
+    safe_description = html.escape(description)
+    st.markdown(f"""
+    <div class="dashboard-empty-state" role="status">
+        <span class="dashboard-empty-state__marker" aria-hidden="true"></span>
+        <div>
+            <div class="dashboard-empty-state__title">{safe_title}</div>
+            <div class="dashboard-empty-state__description">{safe_description}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_dashboard_section_header(title: str, description: str, meta: str = "") -> None:
+    """Render a compact header for a dashboard tab section."""
+    safe_title = html.escape(title)
+    safe_description = html.escape(description)
+    safe_meta = html.escape(meta)
+    meta_html = (
+        f'<div class="dashboard-section-header__meta">{safe_meta}</div>'
+        if safe_meta else ""
+    )
+    st.markdown(f"""
+    <div class="dashboard-section-header">
+        <div>
+            <div class="dashboard-section-header__title" role="heading" aria-level="3">{safe_title}</div>
+            <div class="dashboard-section-header__description">{safe_description}</div>
+        </div>
+        {meta_html}
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def render_dashboard_page():
@@ -2830,7 +3200,7 @@ def render_dashboard_page():
     st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
     
     # 탭 구성 (항상 표시)
-    tab1, tab2, tab3, tab4 = st.tabs(["📝 SQL & 데이터", "📊 저장된 표 관리", "🧠 AI 융합 분석", "📈 시각화"])
+    tab1, tab2, tab3, tab4 = st.tabs(["SQL · 데이터", "저장된 표", "AI 분석", "시각화"])
     
     # 메시지 처리 (탭 외부에서 사용자 메시지 표시)
     if st.session_state.messages:
@@ -2902,36 +3272,28 @@ def render_dashboard_page():
             st.markdown("### 생성된 SQL")
             st.code(current_sql_query, language='sql')
         else:
-            st.info("💡 위의 입력창에 질문을 입력하면 SQL 쿼리 결과가 여기에 표시됩니다.")
+            render_dashboard_empty_state(
+                "분석할 질문을 입력하세요",
+                "위 검색창에 자연어로 질문하면 생성된 SQL과 분석 결과를 이 영역에서 확인할 수 있습니다."
+            )
 
     # [탭 2] 저장된 표 관리
     with tab2:
-        st.subheader("📂 저장된 데이터 보관함")
+        saved_table_count = len(st.session_state.saved_tables)
+        render_dashboard_section_header(
+            "저장된 표",
+            "분석 결과를 다시 확인하고 AI 분석에 사용할 데이터를 관리합니다.",
+            f"{saved_table_count}개 저장" if saved_table_count else ""
+        )
         
         if not st.session_state.saved_tables:
-            st.info("📭 보관함이 비어있습니다. 'SQL & 데이터' 탭에서 표를 저장해주세요.")
+            render_dashboard_empty_state(
+                "아직 저장된 표가 없습니다",
+                "SQL · 데이터 탭에서 분석 결과를 저장하면 이곳에서 다시 확인할 수 있습니다."
+            )
         else:
-            st.markdown(f"총 **{len(st.session_state.saved_tables)}개**의 표가 저장되었습니다.")
-            
-            # 저장된 표 목록 (카드 형태로 표시)
+            # 저장된 표 목록
             for i, item in enumerate(st.session_state.saved_tables):
-                # 카드 스타일 컨테이너
-                st.markdown(f"""
-                <div style="
-                    border: 1px solid #e0e0e0;
-                    border-radius: 8px;
-                    padding: 1rem;
-                    margin-bottom: 1rem;
-                    background-color: #ffffff;
-                    box-shadow: 0px 2px 4px rgba(0,0,0,0.1);
-                ">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                        <h4 style="margin: 0; color: #333;">📑 {item['query']}</h4>
-                        <small style="color: #666;">{item['timestamp']}</small>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
                 # 숫자 포맷팅 (SQL & 데이터 탭과 동일한 로직)
                 df_display = item['data'].copy()
                 numeric_cols = df_display.select_dtypes(include=['number']).columns
@@ -2948,52 +3310,144 @@ def render_dashboard_page():
                         if not valid_vals.empty and valid_vals.apply(lambda x: x.is_integer()).all(): 
                             is_integer_like = True
                     format_dict[col] = "{:,.0f}" if is_integer_like else "{:,.2f}"
-                
-                # 전체 데이터 표시 (스크롤 가능)
-                st.dataframe(
-                    df_display.style.format(format_dict), 
-                    use_container_width=True, 
-                    height=300
-                )
-                
-                col1, col2 = st.columns([1, 4])
-                with col1:
-                    if st.button(f"🗑️ 삭제하기", key=f"del_{i}"):
-                        st.session_state.saved_tables.pop(i)
-                        # 파일에 저장 (삭제 반영, 사용자별)
-                        username = st.session_state.get('username')
-                        if username:
-                            save_tables_to_file(st.session_state.saved_tables, username)
-                        st.rerun()
-                
-                st.markdown("---")
+
+                safe_query = html.escape(str(item.get('query') or '제목 없는 분석'))
+                safe_timestamp = html.escape(str(item.get('timestamp') or '저장 시각 없음'))
+                row_count, column_count = df_display.shape
+                table_height = min(280, max(170, 35 * (min(row_count, 7) + 1)))
+
+                with st.container(border=True, key=f"saved_table_card_{i}"):
+                    info_col, action_col = st.columns(
+                        [5, 1],
+                        gap="medium",
+                        vertical_alignment="center"
+                    )
+
+                    with info_col:
+                        st.markdown(f"""
+                        <div class="saved-table-card__title">{safe_query}</div>
+                        <div class="saved-table-card__meta">
+                            {safe_timestamp} · {row_count:,}행 × {column_count:,}열
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    with action_col:
+                        if st.button(
+                            "삭제",
+                            key=f"delete_saved_{i}",
+                            help="이 저장 데이터를 삭제합니다.",
+                            use_container_width=True
+                        ):
+                            st.session_state.saved_tables.pop(i)
+                            st.session_state.pop('ai_analysis_sources', None)
+                            st.session_state.pop('ai_analysis_report', None)
+                            st.session_state.pop('ai_analysis_report_meta', None)
+                            username = st.session_state.get('username')
+                            if username:
+                                save_tables_to_file(st.session_state.saved_tables, username)
+                            st.rerun()
+
+                    st.dataframe(
+                        df_display.style.format(format_dict),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=table_height
+                    )
     
-    # [탭 3] AI 융합 심층 분석
+    # [탭 3] 저장 데이터 종합 분석
     with tab3:
-        st.subheader("🧠 AI 융합 심층 분석")
-        st.caption("저장된 모든 데이터와 시장/뉴스 정보를 결합하여 의미 있는 인사이트를 도출합니다.")
+        saved_table_count = len(st.session_state.saved_tables)
+        render_dashboard_section_header(
+            "AI 분석",
+            "선택한 저장 데이터를 함께 살펴보고 핵심 변화, 리스크, 실행 과제를 정리합니다.",
+            f"{saved_table_count}개 데이터" if saved_table_count else ""
+        )
         
         if not st.session_state.saved_tables:
-            st.info("📭 분석할 데이터가 없습니다. 'SQL & 데이터' 탭에서 표를 저장해주세요.")
-        else:
-            # 사용자 추가 프롬프트 입력창
-            user_additional_prompt = st.text_area(
-                "💭 추가 분석 요청사항 (선택사항)",
-                placeholder="예: 관련 학술 논문을 인용하여 학술적 근거를 제시해줘 / 해당 산업의 최신 트렌드와 시장 동향을 조사하여 데이터와 연계 분석해줘 / 국내외 연구사례를 참고하여 비교 분석해줘",
-                height=100,
-                key="ai_analysis_prompt"
+            render_dashboard_empty_state(
+                "AI 분석을 위한 데이터가 필요합니다",
+                "SQL · 데이터 탭에서 하나 이상의 결과를 저장한 뒤 종합 분석을 시작하세요."
             )
-            
-            analyze_key = f"analyze_{hash(str(st.session_state.saved_tables))}"
-            if st.button("🚀 데이터+시장+뉴스 융합 분석하기", type="primary", use_container_width=True, key=analyze_key):
-                with st.spinner("🤖 시장 트렌드 검색 및 데이터 융합 분석 중..."):
-                    report = generate_comprehensive_report(
-                        st.session_state.saved_tables,
-                        additional_prompt=user_additional_prompt
-                    )
-                    # 보고서 출력 (HTML 직접 렌더링)
-                    import streamlit.components.v1 as components
-                    components.html(report, height=800, scrolling=True)
+        else:
+            source_options = list(range(saved_table_count))
+
+            def format_ai_source(source_index: int) -> str:
+                source_item = st.session_state.saved_tables[source_index]
+                source_df = source_item.get('data', pd.DataFrame())
+                source_title = str(source_item.get('query') or '제목 없는 분석').strip()
+                if len(source_title) > 54:
+                    source_title = f"{source_title[:53]}…"
+                return f"{source_title} · {len(source_df):,}행 × {len(source_df.columns):,}열"
+
+            with st.container(border=True, key="ai_analysis_workspace"):
+                st.markdown("""
+                <div class="ai-workspace__intro">
+                    <div class="ai-workspace__title">분석 설정</div>
+                    <div class="ai-workspace__description">
+                        함께 비교할 저장 데이터를 고르고, 필요한 경우 분석 관점을 덧붙여 주세요.
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                selected_source_indices = st.multiselect(
+                    "분석 대상",
+                    options=source_options,
+                    default=source_options,
+                    format_func=format_ai_source,
+                    key="ai_analysis_sources",
+                    help="종합 분석에 포함할 저장 데이터를 선택하세요."
+                )
+
+                user_additional_prompt = st.text_area(
+                    "분석 요청 (선택)",
+                    placeholder="예: 전년 대비 변동 원인과 다음 분기 리스크를 중심으로 분석해 주세요.",
+                    height=110,
+                    key="ai_analysis_prompt"
+                )
+
+                st.markdown(
+                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개를 내부 데이터에 근거해 종합합니다.</div>',
+                    unsafe_allow_html=True
+                )
+
+                if st.button(
+                    "종합 분석 시작",
+                    type="primary",
+                    use_container_width=True,
+                    key="run_ai_analysis",
+                    disabled=not selected_source_indices
+                ):
+                    selected_tables = [
+                        st.session_state.saved_tables[index]
+                        for index in selected_source_indices
+                    ]
+                    with st.spinner("선택한 데이터를 분석하고 있습니다..."):
+                        report = generate_comprehensive_report(
+                            selected_tables,
+                            additional_prompt=user_additional_prompt
+                        )
+                        st.session_state.ai_analysis_report = report
+                        st.session_state.ai_analysis_report_meta = {
+                            "source_count": len(selected_tables),
+                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                        }
+
+            saved_report = st.session_state.get('ai_analysis_report')
+            if saved_report:
+                report_meta = st.session_state.get('ai_analysis_report_meta', {})
+                safe_report_time = html.escape(str(report_meta.get('created_at', '')))
+                report_source_count = report_meta.get('source_count', 0)
+                st.markdown(f"""
+                <div class="ai-analysis-result-header">
+                    <div class="ai-analysis-result-header__title">분석 결과</div>
+                    <div class="ai-analysis-result-header__meta">
+                        데이터 {report_source_count}개 · {safe_report_time}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                import streamlit.components.v1 as components
+                components.html(saved_report, height=800, scrolling=True)
     
     # [탭 4] 시각화
     with tab4:
@@ -3003,9 +3457,15 @@ def render_dashboard_page():
                 for chart in charts:
                     st.plotly_chart(chart[1], use_container_width=True)
             else:
-                st.info("시각화할 수 있는 데이터가 없습니다.")
+                render_dashboard_empty_state(
+                    "시각화할 수 있는 데이터가 없습니다",
+                    "다른 질문으로 분석하거나 숫자형 데이터가 포함된 결과를 선택해 주세요."
+                )
         else:
-            st.info("💡 위의 입력창에 질문을 입력하면 데이터 시각화가 여기에 표시됩니다.")
+            render_dashboard_empty_state(
+                "시각화할 질문을 입력하세요",
+                "분석 결과에 차트로 표현할 수 있는 데이터가 있으면 이 영역에 자동으로 표시됩니다."
+            )
     
     # 검색 실행
     query_to_process = None
@@ -3177,13 +3637,12 @@ def render_data_manager_page():
                     # 업로드 파일의 모든 컬럼
                     upload_columns = list(df_upload.columns)
                     
-                    # 🔥 테이블 스키마 재생성 (기존 테이블 삭제 후 업로드 파일의 모든 컬럼으로 재생성)
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    
                     # 기존 테이블 스키마 확인 (정보 표시용)
-                    cursor.execute(f"PRAGMA table_info({selected_table})")
-                    existing_columns = [row[1] for row in cursor.fetchall()]
+                    existing_columns = (
+                        db_table_columns(selected_table, DB_PATH)
+                        if db_table_exists(selected_table, DB_PATH)
+                        else []
+                    )
                     
                     # 컬럼 정보 표시
                     st.info(f"📊 **컬럼 정보:**")
@@ -3200,20 +3659,15 @@ def render_data_manager_page():
                             if added_cols:
                                 st.info(f"➕ 추가될 컬럼: {', '.join(added_cols)}")
                     
-                    # 기존 테이블 삭제
-                    with st.spinner("🔄 테이블 스키마 재생성 중..."):
-                        cursor.execute(f"DROP TABLE IF EXISTS {selected_table}")
-                        conn.commit()
-                    
                     # 업로드 모드에 따라 처리
                     mode = 'append' if "추가" in upload_mode else 'replace'
+                    if mode == "append" and existing_columns and set(upload_columns) != set(existing_columns):
+                        st.error("추가 업로드는 기존 테이블과 컬럼이 같아야 합니다. 컬럼을 맞추거나 덮어쓰기를 선택해주세요.")
+                        return
                     
-                    # 업로드 파일의 모든 컬럼으로 테이블 재생성 및 데이터 업로드
+                    # 덮어쓰기는 트랜잭션으로 교체하고, 추가는 기존 행을 보존한다.
                     with st.spinner(f"💾 `{selected_table}` 테이블에 데이터 저장 중..."):
-                        # 업로드 파일의 모든 컬럼 사용
-                        df_upload.to_sql(selected_table, conn, if_exists=mode, index=False)
-                    
-                    conn.close()
+                        db_write_dataframe(selected_table, df_upload, DB_PATH, if_exists=mode)
                     
                     # 🔥 config.json의 required_columns 업데이트 (업로드 파일의 모든 컬럼으로 교체)
                     with st.spinner("📋 config.json 업데이트 중..."):
@@ -3246,19 +3700,17 @@ def render_data_manager_page():
     st.subheader(f"📋 {selected_table}")
     
     try:
-        conn = get_db_connection()
-        
         # 선택된 테이블 데이터 조회
+        quoted_table = quote_identifier(selected_table)
         # 전표내역인 경우 정렬 적용
         if selected_table == '전표내역':
-            query = f"SELECT * FROM {selected_table} ORDER BY 거래일자 DESC, 전표번호"
+            query = f'SELECT * FROM {quoted_table} ORDER BY "거래일자" DESC, "전표번호"'
         elif selected_table == '회계전표':
-             query = f"SELECT * FROM {selected_table} ORDER BY 거래일자 DESC, 전표번호"
+             query = f'SELECT * FROM {quoted_table} ORDER BY "거래일자" DESC, "전표번호"'
         else:
-            query = f"SELECT * FROM {selected_table}"
+            query = f"SELECT * FROM {quoted_table}"
             
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        df = read_sql_query(query)
         
         if not df.empty:
             # 숫자 포맷팅
@@ -3280,7 +3732,6 @@ def render_data_manager_page():
 def fetch_top_contributors(start_date: datetime, end_date: datetime, limit: int = 5) -> Dict[str, pd.DataFrame]:
     """기간 내 매출/비용 상위 거래처 및 계정 조회 (증감요인 분석용)"""
     try:
-        conn = get_db_connection()
         
         # 1. 매출 상위 거래처
         query_sales_client = """
@@ -3293,7 +3744,7 @@ def fetch_top_contributors(start_date: datetime, end_date: datetime, limit: int 
         ORDER BY 금액 DESC
         LIMIT ?
         """
-        df_sales_client = pd.read_sql_query(query_sales_client, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), limit))
+        df_sales_client = read_sql_query(query_sales_client, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), limit))
         
         # 2. 비용 상위 거래처
         query_cost_client = """
@@ -3306,7 +3757,7 @@ def fetch_top_contributors(start_date: datetime, end_date: datetime, limit: int 
         ORDER BY 금액 DESC
         LIMIT ?
         """
-        df_cost_client = pd.read_sql_query(query_cost_client, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), limit))
+        df_cost_client = read_sql_query(query_cost_client, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), limit))
         
         # 3. 주요 변동 계정 (매출/비용 통합)
         query_account = """
@@ -3317,9 +3768,8 @@ def fetch_top_contributors(start_date: datetime, end_date: datetime, limit: int 
         ORDER BY 금액 DESC
         LIMIT ?
         """
-        df_account = pd.read_sql_query(query_account, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), limit))
+        df_account = read_sql_query(query_account, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), limit))
         
-        conn.close()
         
         return {
             "sales_client": df_sales_client,
@@ -3569,36 +4019,55 @@ def render_tax_analysis_page():
         # --- [실제 세무조정 로직 구현] ---
         def get_tax_adjustments(start_date, end_date):
             try:
-                conn = sqlite3.connect('accounting.db')
-                date_filter = f"WHERE 거래일자 BETWEEN '{start_date}' AND '{end_date}'"
+                params = (start_date, end_date)
+
+                def scalar(query: str):
+                    value = read_sql_query(query, params=params).iloc[0, 0]
+                    return 0 if pd.isna(value) else value
                 
                 # 1. 간주임대료 (Deemed Rent) 로직
                 # 보증금 잔액 (Short-term deposit account 21300) - 필터 내 마지막 잔액이 아닌 총합계 기준(일반적)
-                deposit_bal = pd.read_sql(f"SELECT SUM(대변금액-차변금액) FROM 회계전표 {date_filter} AND 계정코드='21300'", conn).iloc[0,0] or 0
+                deposit_bal = scalar(
+                    'SELECT SUM("대변금액"-"차변금액") FROM "회계전표" '
+                    'WHERE "거래일자" BETWEEN ? AND ? AND "계정코드"=\'21300\''
+                )
                 # 관련 이자수익 (Account 70100)
-                interest_inc = pd.read_sql(f"SELECT SUM(대변금액-차변금액) FROM 회계전표 {date_filter} AND 계정코드='70100'", conn).iloc[0,0] or 0
+                interest_inc = scalar(
+                    'SELECT SUM("대변금액"-"차변금액") FROM "회계전표" '
+                    'WHERE "거래일자" BETWEEN ? AND ? AND "계정코드"=\'70100\''
+                )
                 
                 # 간주임대료 계산 (보증금 * 2.9% - 이자수익)
                 deemed_rent_raw = (deposit_bal * 0.029) - interest_inc
                 deemed_rent = max(0, int(deemed_rent_raw))
                 
                 # 2. 채무면제이익 / 출자전환 (Debt Waiver)
-                waiver_q = f"SELECT SUM(대변금액-차변금액) FROM 회계전표 {date_filter} AND (라인텍스트 LIKE '%채무면제%' OR 라인텍스트 LIKE '%출자전환%')"
-                waiver_amt = pd.read_sql(waiver_q, conn).iloc[0,0] or 0
+                waiver_q = (
+                    'SELECT SUM("대변금액"-"차변금액") FROM "회계전표" '
+                    'WHERE "거래일자" BETWEEN ? AND ? '
+                    'AND ("라인텍스트" LIKE \'%채무면제%\' OR "라인텍스트" LIKE \'%출자전환%\')'
+                )
+                waiver_amt = scalar(waiver_q)
                 
                 # 3. 익금/손금 항목 (Inclusion/Exclusion)
                 # 벌과금/과태료 가산세 등
-                fines_q = f"SELECT SUM(차변금액-대변금액) FROM 회계전표 {date_filter} AND (라인텍스트 LIKE '%벌금%' OR 라인텍스트 LIKE '%과태료%' OR 라인텍스트 LIKE '%가산세%')"
-                tax_non_deduct = pd.read_sql(fines_q, conn).iloc[0,0] or 0
+                fines_q = (
+                    'SELECT SUM("차변금액"-"대변금액") FROM "회계전표" '
+                    'WHERE "거래일자" BETWEEN ? AND ? '
+                    'AND ("라인텍스트" LIKE \'%벌금%\' OR "라인텍스트" LIKE \'%과태료%\' '
+                    'OR "라인텍스트" LIKE \'%가산세%\')'
+                )
+                tax_non_deduct = scalar(fines_q)
                 
                 # 접대비 한도초과 (60600) - 기본 한도 적용 (중소기업 기준 3,600만원)
-                ent_bal = pd.read_sql(f"SELECT SUM(차변금액-대변금액) FROM 회계전표 {date_filter} AND 계정코드='60600'", conn).iloc[0,0] or 0
+                ent_bal = scalar(
+                    'SELECT SUM("차변금액"-"대변금액") FROM "회계전표" '
+                    'WHERE "거래일자" BETWEEN ? AND ? AND "계정코드"=\'60600\''
+                )
                 # 기간 안분 계산 (개월수)
                 months = max(1, (t2_end.year - t2_start.year) * 12 + t2_end.month - t2_start.month + 1)
                 ent_limit = int(36000000 * (months / 12)) # 중소기업 기본한도 월할계산
                 ent_excess = max(0, int(ent_bal - ent_limit))
-                
-                conn.close()
                 
                 return {
                     "deemed_rent": deemed_rent,
@@ -3834,11 +4303,11 @@ def render_tax_analysis_page():
         <div class="form-header-right">
             <div class="header-row">
                 <div class="header-label">법 인 명</div>
-                <div class="header-val">(주)비나우</div>
+                <div class="header-val">샘플제조 주식회사</div>
             </div>
             <div class="header-row">
                 <div class="header-label">사업자등록번호</div>
-                <div class="header-val">116-81-54101</div>
+                <div class="header-val">123-45-67890</div>
             </div>
         </div>
     </div>
@@ -4401,7 +4870,6 @@ def analyze_vat_payment():
 def calculate_vat_output(start_date, end_date):
     """매출세액 계산 (과세/영세/면세 구분)"""
     try:
-        conn = get_db_connection()
         
         # 과세매출 (일반 매출)
         # 수정: 이자수익, 배당금수익, 선수수익 등 부가세 과세표준이 아닌 계정 제외
@@ -4419,7 +4887,7 @@ def calculate_vat_output(start_date, end_date):
           AND 계정명 NOT LIKE '%외화환산이익%'
           AND 거래일자 BETWEEN ? AND ?
         """
-        df_taxable = pd.read_sql_query(query_taxable, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+        df_taxable = read_sql_query(query_taxable, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         과세매출 = float(df_taxable.iloc[0]['매출액']) if not df_taxable.empty else 0.0
         
         # 영세율매출 (수출 등)
@@ -4429,7 +4897,7 @@ def calculate_vat_output(start_date, end_date):
         WHERE (계정명 LIKE '%수출%' OR 계정명 LIKE '%영세%')
           AND 거래일자 BETWEEN ? AND ?
         """
-        df_zero = pd.read_sql_query(query_zero, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+        df_zero = read_sql_query(query_zero, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         영세매출 = float(df_zero.iloc[0]['매출액']) if not df_zero.empty else 0.0
         
         # 면세매출
@@ -4439,10 +4907,9 @@ def calculate_vat_output(start_date, end_date):
         WHERE 계정명 LIKE '%면세%'
           AND 거래일자 BETWEEN ? AND ?
         """
-        df_exempt = pd.read_sql_query(query_exempt, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+        df_exempt = read_sql_query(query_exempt, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         면세매출 = float(df_exempt.iloc[0]['매출액']) if not df_exempt.empty else 0.0
         
-        conn.close()
         
         # 매출세액 = 과세매출 × 10%
         매출세액 = int(과세매출 * 0.1)
@@ -4457,7 +4924,6 @@ def calculate_vat_output(start_date, end_date):
 def calculate_vat_input(start_date, end_date):
     """매입세액 계산 (증빙유형별)"""
     try:
-        conn = get_db_connection()
         
         # 총 매입액 (부가세대급금 또는 매입 계정)
         query_total = """
@@ -4467,7 +4933,7 @@ def calculate_vat_input(start_date, end_date):
                OR 계정명 LIKE '%소모품%' OR 계정명 LIKE '%비용%')
           AND 거래일자 BETWEEN ? AND ?
         """
-        df_total = pd.read_sql_query(query_total, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+        df_total = read_sql_query(query_total, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         총매입액 = float(df_total.iloc[0]['매입액']) if not df_total.empty else 0.0
         
         # 부가세대급금 (실제 매입세액)
@@ -4477,7 +4943,7 @@ def calculate_vat_input(start_date, end_date):
         WHERE 계정명 LIKE '%부가세대급금%'
           AND 거래일자 BETWEEN ? AND ?
         """
-        df_vat = pd.read_sql_query(query_vat, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+        df_vat = read_sql_query(query_vat, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         매입세액_총액 = float(df_vat.iloc[0]['세액']) if not df_vat.empty else 0.0
         
         # 부가세대급금이 없으면 매입액의 10/110으로 추정
@@ -4493,7 +4959,7 @@ def calculate_vat_input(start_date, end_date):
           AND (증빙유형 IN ('과세', '매입', '불공제', '영세율', '수입') OR 증빙유형 LIKE '%전자%' OR 증빙유형 LIKE '%세금%')
           AND 거래일자 BETWEEN ? AND ?
         """
-        df_invoice = pd.read_sql_query(query_invoice, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+        df_invoice = read_sql_query(query_invoice, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         세금계산서_매입 = float(df_invoice.iloc[0]['매입액']) if not df_invoice.empty else 0.0
         
         # 신용카드 매입
@@ -4505,7 +4971,7 @@ def calculate_vat_input(start_date, end_date):
           AND (증빙유형 LIKE '%카드%' OR 증빙유형 LIKE '%신용%' OR 증빙유형 LIKE '%카과%')
           AND 거래일자 BETWEEN ? AND ?
         """
-        df_card = pd.read_sql_query(query_card, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+        df_card = read_sql_query(query_card, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         카드_매입 = float(df_card.iloc[0]['매입액']) if not df_card.empty else 0.0
         
         # 현금영수증 매입
@@ -4516,10 +4982,9 @@ def calculate_vat_input(start_date, end_date):
           AND (증빙유형 LIKE '%현금%' OR 증빙유형 LIKE '%현영%')
           AND 거래일자 BETWEEN ? AND ?
         """
-        df_cash = pd.read_sql_query(query_cash, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+        df_cash = read_sql_query(query_cash, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         현금영수증_매입 = float(df_cash.iloc[0]['매입액']) if not df_cash.empty else 0.0
         
-        conn.close()
         
         return 총매입액, 매입세액_총액, 세금계산서_매입, 카드_매입, 현금영수증_매입
         
@@ -4531,7 +4996,6 @@ def calculate_vat_input(start_date, end_date):
 def calculate_nondeductible_entertainment_vat(start_date, end_date):
     """접대비 관련 불공제 매입세액"""
     try:
-        conn = get_db_connection()
         # 증빙유형이 '불공제'인 경우도 포함하거나, 계정명으로 판단
         query = """
         SELECT COALESCE(SUM(차변금액), 0) as 금액
@@ -4539,8 +5003,7 @@ def calculate_nondeductible_entertainment_vat(start_date, end_date):
         WHERE (계정명 LIKE '%접대비%' OR (증빙유형 = '불공제' AND 계정명 LIKE '%접대%'))
           AND 거래일자 BETWEEN ? AND ?
         """
-        df = pd.read_sql_query(query, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
-        conn.close()
+        df = read_sql_query(query, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         접대비 = float(df.iloc[0]['금액']) if not df.empty else 0.0
         # 접대비의 부가세 상당액 (10/110)
         return int(접대비 * 10 / 110)
@@ -4551,7 +5014,6 @@ def calculate_nondeductible_entertainment_vat(start_date, end_date):
 def calculate_nondeductible_vehicle_vat(start_date, end_date):
     """비영업용 승용차 관련 불공제 매입세액"""
     try:
-        conn = get_db_connection()
         query = """
         SELECT COALESCE(SUM(차변금액), 0) as 금액
         FROM 회계전표
@@ -4560,8 +5022,7 @@ def calculate_nondeductible_vehicle_vat(start_date, end_date):
                OR 계정명 LIKE '%감가상각%' OR 라인텍스트 LIKE '%주유%' OR 라인텍스트 LIKE '%유류%')
           AND 거래일자 BETWEEN ? AND ?
         """
-        df = pd.read_sql_query(query, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
-        conn.close()
+        df = read_sql_query(query, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         차량비 = float(df.iloc[0]['금액']) if not df.empty else 0.0
         return int(차량비 * 10 / 110)
     except:
@@ -4571,15 +5032,13 @@ def calculate_nondeductible_vehicle_vat(start_date, end_date):
 def calculate_nondeductible_personal_vat(start_date, end_date):
     """개인적 공급 관련 불공제 매입세액"""
     try:
-        conn = get_db_connection()
         query = """
         SELECT COALESCE(SUM(차변금액), 0) as 금액
         FROM 회계전표
         WHERE (라인텍스트 LIKE '%개인%' OR 라인텍스트 LIKE '%사적%' OR 라인텍스트 LIKE '%가사%')
           AND 거래일자 BETWEEN ? AND ?
         """
-        df = pd.read_sql_query(query, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
-        conn.close()
+        df = read_sql_query(query, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         개인비용 = float(df.iloc[0]['금액']) if not df.empty else 0.0
         return int(개인비용 * 10 / 110)
     except:
@@ -4589,7 +5048,6 @@ def calculate_nondeductible_personal_vat(start_date, end_date):
 def calculate_nondeductible_exempt_vat(start_date, end_date):
     """면세사업 관련 불공제 매입세액"""
     try:
-        conn = get_db_connection()
         query = """
         SELECT COALESCE(SUM(차변금액), 0) as 금액
         FROM 회계전표
@@ -4597,8 +5055,7 @@ def calculate_nondeductible_exempt_vat(start_date, end_date):
           AND (계정명 LIKE '%매입%' OR 계정명 LIKE '%비용%')
           AND 거래일자 BETWEEN ? AND ?
         """
-        df = pd.read_sql_query(query, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
-        conn.close()
+        df = read_sql_query(query, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         면세매입 = float(df.iloc[0]['금액']) if not df.empty else 0.0
         return int(면세매입 * 10 / 110)
     except:
@@ -5074,7 +5531,6 @@ def analyze_entertainment_expense():
 def calculate_sales(start_date, end_date):
     """매출액 계산"""
     try:
-        conn = get_db_connection()
         
         # 매출 계정 찾기 (대변금액 합계)
         query = """
@@ -5084,8 +5540,7 @@ def calculate_sales(start_date, end_date):
           AND 거래일자 BETWEEN ? AND ?
         """
         
-        df = pd.read_sql_query(query, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
-        conn.close()
+        df = read_sql_query(query, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         
         return float(df.iloc[0]['매출액']) if not df.empty else 0.0
     except Exception as e:
@@ -5096,7 +5551,6 @@ def calculate_sales(start_date, end_date):
 def calculate_entertainment_expense(start_date, end_date):
     """전체 접대비 계산"""
     try:
-        conn = get_db_connection()
         
         query = """
         SELECT COALESCE(SUM(차변금액), 0) as 접대비
@@ -5105,8 +5559,7 @@ def calculate_entertainment_expense(start_date, end_date):
           AND 거래일자 BETWEEN ? AND ?
         """
         
-        df = pd.read_sql_query(query, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
-        conn.close()
+        df = read_sql_query(query, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         
         return float(df.iloc[0]['접대비']) if not df.empty else 0.0
     except Exception as e:
@@ -5117,7 +5570,6 @@ def calculate_entertainment_expense(start_date, end_date):
 def calculate_culture_entertainment_expense(start_date, end_date):
     """문화접대비 계산"""
     try:
-        conn = get_db_connection()
         
         query = """
         SELECT COALESCE(SUM(차변금액), 0) as 문화접대비
@@ -5134,8 +5586,7 @@ def calculate_culture_entertainment_expense(start_date, end_date):
           AND 거래일자 BETWEEN ? AND ?
         """
         
-        df = pd.read_sql_query(query, conn, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
-        conn.close()
+        df = read_sql_query(query, params=(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
         
         return float(df.iloc[0]['문화접대비']) if not df.empty else 0.0
     except Exception as e:
@@ -5146,7 +5597,6 @@ def calculate_culture_entertainment_expense(start_date, end_date):
 def calculate_product_production_input():
     """제조완료된 제품의 생산 입고액 계산 (회계전표 기반, Cross-Check용)"""
     try:
-        conn = get_db_connection()
         
         query = """
         SELECT COALESCE(SUM(차변금액), 0) AS 제품_생산입고액
@@ -5155,8 +5605,7 @@ def calculate_product_production_input():
           AND 증빙유형 = '제조완료'
         """
         
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        df = read_sql_query(query)
         
         return float(df.iloc[0]['제품_생산입고액']) if not df.empty else 0.0
     except Exception as e:
@@ -5494,27 +5943,11 @@ def render_settings_page():
                             try:
                                 config_upload = load_config()
                                 
-                                # 전체 마이그레이션 모드인 경우 기존 테이블 삭제
-                                if is_full_migration:
-                                    with st.spinner("🗑️ 기존 테이블 삭제 중..."):
-                                        deleted_count = delete_managed_tables()
-                                        if clear_managed_tables is not None:
-                                            clear_managed_tables(config_upload)
-                                        if deleted_count > 0:
-                                            st.info(f"🗑️ 기존 {deleted_count}개의 테이블이 삭제되었습니다.")
-                                
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                
-                                # 🔥 테이블 스키마 재생성 (기존 테이블 삭제 후 선택된 컬럼으로 재생성)
-                                # 기존 테이블이 있는지 확인
-                                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
-                                table_exists = cursor.fetchone() is not None
+                                # 기존 테이블 스키마 확인
+                                table_exists = db_table_exists(table_name, DB_PATH)
                                 
                                 if table_exists:
-                                    # 기존 테이블 스키마 확인 (정보 표시용)
-                                    cursor.execute(f"PRAGMA table_info({table_name})")
-                                    existing_columns = [row[1] for row in cursor.fetchall()]
+                                    existing_columns = db_table_columns(table_name, DB_PATH)
                                     
                                     # 컬럼 정보 표시
                                     if set(selected_columns) != set(existing_columns):
@@ -5530,21 +5963,24 @@ def render_settings_page():
                                         if added_cols:
                                             st.info(f"➕ 추가될 컬럼: {', '.join(added_cols)}")
                                         
-                                        # 기존 테이블 삭제
-                                        with st.spinner("🔄 테이블 스키마 재생성 중..."):
-                                            cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                                            conn.commit()
-                                
                                 # 선택된 컬럼만 포함한 DataFrame 생성
                                 df_to_upload = df_upload[selected_columns].copy()
                                 
-                                mode = 'append' if "추가" in upload_mode else 'replace'
+                                mode = 'replace' if is_full_migration else ('append' if "추가" in upload_mode else 'replace')
+                                if mode == "append" and table_exists and set(selected_columns) != set(existing_columns):
+                                    st.error("추가 업로드는 기존 테이블과 컬럼이 같아야 합니다. 컬럼을 맞추거나 덮어쓰기를 선택해주세요.")
+                                    return
                                 
-                                # 데이터 삽입 (테이블이 삭제되었으면 새로 생성됨)
+                                # 데이터 삽입 (추가는 기존 행 보존, 덮어쓰기는 트랜잭션 교체)
                                 with st.spinner(f"💾 `{table_name}` 테이블에 데이터 저장 중..."):
-                                    df_to_upload.to_sql(table_name, conn, if_exists=mode, index=False)
-                                
-                                conn.close()
+                                    if is_full_migration:
+                                        db_replace_dataframes(
+                                            {table_name: df_to_upload},
+                                            DB_PATH,
+                                            drop_tables=get_managed_tables(config_upload),
+                                        )
+                                    else:
+                                        db_write_dataframe(table_name, df_to_upload, DB_PATH, if_exists=mode)
                                 
                                 # 🔥 config.json의 required_columns 업데이트 (업로드 파일의 선택된 컬럼으로 교체)
                                 with st.spinner("📋 config.json 업데이트 중..."):
@@ -5584,11 +6020,6 @@ def render_settings_page():
                                 
                             except Exception as e:
                                 st.error(f"❌ 업로드 중 오류 발생: {str(e)}")
-                                if 'conn' in locals(): 
-                                    try:
-                                        conn.close()
-                                    except:
-                                        pass
                 
                 # 엑셀 파일 읽기
                 elif is_excel:
@@ -5677,89 +6108,67 @@ def render_settings_page():
                                         progress_bar = st.progress(0)
                                         status_text = st.empty()
                                         
-                                        # 전체 마이그레이션 모드인 경우 기존 테이블 삭제
-                                        if is_full_migration:
-                                            status_text.info("🗑️ 기존 테이블 삭제 중...")
-                                            with st.spinner("🗑️ 기존 테이블 삭제 중..."):
-                                                deleted_count = delete_managed_tables()
-                                                if clear_managed_tables is not None:
-                                                    clear_managed_tables(config)
-                                                if deleted_count > 0:
-                                                    st.info(f"🗑️ 기존 {deleted_count}개의 테이블이 삭제되었습니다.")
-                                        
-                                        # 새 테이블 목록 초기화 (전체 마이그레이션인 경우)
-                                        new_table_list = [] if is_full_migration else get_managed_tables(config)
-                                        
-                                        # 각 테이블 업로드 진행
-                                        current_index = 0
-                                        for sheet_name, config_data in table_configs.items():
-                                            current_index += 1
-                                            try:
-                                                table_name = config_data['table_name']
-                                                df_to_upload = config_data['df']
-                                                row_count = len(df_to_upload)
-                                                
-                                                # 진행율 업데이트
-                                                progress = current_index / total_tables
-                                                progress_bar.progress(progress)
-                                                status_text.info(f"📤 진행 중: {current_index}/{total_tables} - `{table_name}` 테이블 업로드 중... ({row_count:,}행)")
-                                                
-                                                # 업로드 파일의 모든 컬럼 사용
-                                                upload_columns = list(df_to_upload.columns)
-                                                
-                                                # 🔥 테이블 스키마 재생성 (기존 테이블 삭제 후 업로드 파일의 모든 컬럼으로 재생성)
-                                                conn = get_db_connection()
-                                                cursor = conn.cursor()
-                                                
-                                                # 기존 테이블이 있는지 확인
-                                                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
-                                                table_exists = cursor.fetchone() is not None
-                                                
-                                                if table_exists:
-                                                    # 기존 테이블 스키마 확인 (정보 표시용)
-                                                    cursor.execute(f"PRAGMA table_info({table_name})")
-                                                    existing_columns = [row[1] for row in cursor.fetchall()]
-                                                    
-                                                    if set(upload_columns) != set(existing_columns):
-                                                        # 기존 테이블 삭제
-                                                        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                                                        conn.commit()
-                                                
-                                                # 업로드 파일의 모든 컬럼으로 테이블 생성 및 데이터 업로드
-                                                with st.spinner(f"💾 `{table_name}` 테이블에 {row_count:,}건의 데이터 업로드 중..."):
-                                                    df_to_upload.to_sql(
-                                                        table_name, 
-                                                        conn, 
-                                                        if_exists='replace', 
-                                                        index=False
-                                                    )
-                                                conn.close()
-                                                
-                                                # 새 테이블 목록에 추가
+                                        requested_table_names = [
+                                            item['table_name'] for item in table_configs.values()
+                                        ]
+                                        duplicate_names = sorted({
+                                            name for name in requested_table_names
+                                            if requested_table_names.count(name) > 1
+                                        })
+                                        if duplicate_names:
+                                            st.error(
+                                                "서로 다른 시트에 같은 테이블 이름을 사용할 수 없습니다: "
+                                                + ", ".join(duplicate_names)
+                                            )
+                                            return
+
+                                        frames_to_upload = {
+                                            item['table_name']: item['df']
+                                            for item in table_configs.values()
+                                        }
+                                        previous_tables = get_managed_tables(config)
+                                        drop_tables = previous_tables if is_full_migration else []
+
+                                        def report_progress(table_name, index, total, row_count):
+                                            progress_bar.progress(index / total)
+                                            status_text.info(
+                                                f"📤 진행 중: {index}/{total} - `{table_name}` "
+                                                f"테이블 업로드 중... ({row_count:,}행)"
+                                            )
+
+                                        try:
+                                            # 모든 시트를 한 트랜잭션으로 저장한다. 하나라도 실패하면 기존 DB를 유지한다.
+                                            db_replace_dataframes(
+                                                frames_to_upload,
+                                                DB_PATH,
+                                                drop_tables=drop_tables,
+                                                progress=report_progress,
+                                            )
+
+                                            new_table_list = [] if is_full_migration else list(previous_tables)
+                                            config.setdefault("required_columns", {})
+                                            for table_name, df_to_upload in frames_to_upload.items():
                                                 if table_name not in new_table_list:
                                                     new_table_list.append(table_name)
-                                                
-                                                # 🔥 config.json의 required_columns 업데이트 (업로드 파일의 모든 컬럼으로 교체)
-                                                if update_required_columns is not None:
-                                                    success = update_required_columns(table_name, upload_columns, config)
-                                                    if not success:
-                                                        st.warning(f"⚠️ `{table_name}` 테이블의 config.json 업데이트에 실패했습니다.")
-                                                
-                                                uploaded_count += 1
-                                                # 개별 테이블 업로드 완료 메시지
-                                                st.success(f"✅ [{current_index}/{total_tables}] `{table_name}` 테이블 업로드 완료! ({row_count:,}행, {len(upload_columns)}컬럼)")
-                                                
-                                            except Exception as e:
-                                                failed_tables.append(f"`{table_name}`: {str(e)}")
-                                                st.error(f"❌ [{current_index}/{total_tables}] `{table_name}` 테이블 업로드 실패: {str(e)}")
+                                                config["required_columns"][table_name] = list(df_to_upload.columns)
+                                            config["managed_tables"] = new_table_list
+                                            if not save_config(config):
+                                                st.warning("데이터는 저장됐지만 테이블 설정 저장에 실패했습니다.")
+
+                                            uploaded_count = total_tables
+                                            for index, (table_name, df_to_upload) in enumerate(frames_to_upload.items(), start=1):
+                                                st.success(
+                                                    f"✅ [{index}/{total_tables}] `{table_name}` 테이블 업로드 완료! "
+                                                    f"({len(df_to_upload):,}행, {len(df_to_upload.columns)}컬럼)"
+                                                )
+                                        except Exception as e:
+                                            failed_tables = [
+                                                f"`{table_name}`: {str(e)}" for table_name in frames_to_upload
+                                            ]
+                                            st.error(f"❌ 전체 업로드를 취소했습니다. 기존 데이터는 유지됩니다: {e}")
                                         
                                         # 진행율 100% 완료
                                         progress_bar.progress(1.0)
-                                        
-                                        # JSON에 테이블 목록 업데이트
-                                        if update_managed_tables is not None:
-                                            with st.spinner("💾 테이블 목록 저장 중..."):
-                                                update_managed_tables(new_table_list, config)
                                         
                                         # 최종 결과 피드백
                                         status_text.empty()
@@ -5946,27 +6355,11 @@ def render_settings_page():
                                         try:
                                             config_upload = load_config()
                                             
-                                            # 전체 마이그레이션 모드인 경우 기존 테이블 삭제
-                                            if is_full_migration:
-                                                with st.spinner("🗑️ 기존 테이블 삭제 중..."):
-                                                    deleted_count = delete_managed_tables()
-                                                    if clear_managed_tables is not None:
-                                                        clear_managed_tables(config_upload)
-                                                    if deleted_count > 0:
-                                                        st.info(f"🗑️ 기존 {deleted_count}개의 테이블이 삭제되었습니다.")
-                                            
-                                            conn = get_db_connection()
-                                            cursor = conn.cursor()
-                                            
-                                            # 🔥 테이블 스키마 재생성 (기존 테이블 삭제 후 선택된 컬럼으로 재생성)
-                                            # 기존 테이블이 있는지 확인
-                                            cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
-                                            table_exists = cursor.fetchone() is not None
+                                            # 기존 테이블 스키마 확인
+                                            table_exists = db_table_exists(table_name, DB_PATH)
                                             
                                             if table_exists:
-                                                # 기존 테이블 스키마 확인 (정보 표시용)
-                                                cursor.execute(f"PRAGMA table_info({table_name})")
-                                                existing_columns = [row[1] for row in cursor.fetchall()]
+                                                existing_columns = db_table_columns(table_name, DB_PATH)
                                                 
                                                 # 컬럼 정보 표시
                                                 if set(selected_columns) != set(existing_columns):
@@ -5982,21 +6375,24 @@ def render_settings_page():
                                                     if added_cols:
                                                         st.info(f"➕ 추가될 컬럼: {', '.join(added_cols)}")
                                                     
-                                                    # 기존 테이블 삭제
-                                                    with st.spinner("🔄 테이블 스키마 재생성 중..."):
-                                                        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                                                        conn.commit()
-                                            
                                             # 선택된 컬럼만 포함한 DataFrame 생성
                                             df_to_upload = df_upload[selected_columns].copy()
                                             
-                                            mode = 'append' if "추가" in upload_mode else 'replace'
+                                            mode = 'replace' if is_full_migration else ('append' if "추가" in upload_mode else 'replace')
+                                            if mode == "append" and table_exists and set(selected_columns) != set(existing_columns):
+                                                st.error("추가 업로드는 기존 테이블과 컬럼이 같아야 합니다. 컬럼을 맞추거나 덮어쓰기를 선택해주세요.")
+                                                return
                                             
-                                            # 데이터 삽입 (테이블이 삭제되었으면 새로 생성됨)
+                                            # 데이터 삽입 (추가는 기존 행 보존, 덮어쓰기는 트랜잭션 교체)
                                             with st.spinner(f"💾 `{table_name}` 테이블에 데이터 저장 중..."):
-                                                df_to_upload.to_sql(table_name, conn, if_exists=mode, index=False)
-                                            
-                                            conn.close()
+                                                if is_full_migration:
+                                                    db_replace_dataframes(
+                                                        {table_name: df_to_upload},
+                                                        DB_PATH,
+                                                        drop_tables=get_managed_tables(config_upload),
+                                                    )
+                                                else:
+                                                    db_write_dataframe(table_name, df_to_upload, DB_PATH, if_exists=mode)
                                             
                                             # 🔥 config.json의 required_columns 업데이트 (업로드 파일의 선택된 컬럼으로 교체)
                                             with st.spinner("📋 config.json 업데이트 중..."):
@@ -6036,11 +6432,6 @@ def render_settings_page():
                                             
                                         except Exception as e:
                                             st.error(f"❌ 업로드 중 오류 발생: {str(e)}")
-                                            if 'conn' in locals(): 
-                                                try:
-                                                    conn.close()
-                                                except:
-                                                    pass
                         
                         except ImportError:
                             # openpyxl이 없는 경우 기존 방식 사용
@@ -6095,20 +6486,14 @@ def render_settings_page():
 
 def main():
     init_session_state()
-    init_users_directory()  # 사용자 디렉토리 초기화
+    if not is_remote_database():
+        init_users_directory()  # 로컬 개발용 사용자 디렉토리
     check_database()
     
-    # 로그인 확인 및 자동 로그인 복원
+    # 로그인은 브라우저 세션에서만 유지한다. 서버 공용 파일 자동 로그인은 사용하지 않는다.
     if 'logged_in' not in st.session_state or not st.session_state.get('logged_in'):
-        saved_username = load_current_user()
-        if saved_username:
-            # 저장된 사용자가 있으면 자동 로그인
-            st.session_state['logged_in'] = True
-            st.session_state['username'] = saved_username
-            st.session_state.saved_tables = load_tables_from_file(saved_username)
-        else:
-            render_login_page()
-            return
+        render_login_page()
+        return
     
     username = st.session_state.get('username')
     
@@ -6119,6 +6504,11 @@ def main():
     
     # 사이드바 메뉴 (넓어진 너비 + 실제 바다 배경)
     with st.sidebar:
+        if is_remote_database():
+            st.caption(f"● {backend_label()} 영구 저장 연결됨")
+        else:
+            st.warning("로컬 임시 저장 모드 · 배포 시 데이터가 사라질 수 있습니다.")
+
         # 로그인 정보 표시
         st.markdown(f"""
         <div style="
@@ -6136,7 +6526,6 @@ def main():
         
         # 로그아웃 버튼
         if st.button("🚪 로그아웃", use_container_width=True):
-            clear_current_user()  # 로그인 상태 파일 삭제
             st.session_state['logged_in'] = False
             st.session_state.pop('username', None)
             st.session_state.pop('saved_tables', None)

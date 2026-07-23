@@ -1,121 +1,84 @@
-# TalkToData - 회계 감사 시스템
+# TalkToData
 
-AI 기반 자연어 SQL 쿼리 시스템
+제조업 데이터를 자연어로 조회·분석하는 Streamlit 앱입니다. 로컬 개발은 SQLite를 사용하고, 배포 환경은 Supabase PostgreSQL에 업로드 데이터·설정·계정·저장된 표를 영구 보관합니다.
 
-복식부기(Double Entry) 원칙을 반영한 회계 감사 시스템의 SQLite 데이터베이스를 조회하고 분석할 수 있는 Streamlit 기반 웹 뷰어입니다.
+## 주요 기능
 
-## 📋 기능
+- 자연어 질문을 읽기 전용 SQL로 변환
+- 제조업 회계·매출·원가·재고 데이터 분석
+- CSV/Excel 단일·다중 테이블 업로드
+- 사용자별 분석 결과와 저장된 표 보관
+- SQLite 개발 모드와 Supabase 운영 모드 자동 전환
 
-- 📊 **대시보드**: 통계 요약 및 계정유형별 분석
-- 📑 **전체 데이터 조회**: 필터링 및 검색 기능
-- 🔍 **전표별 조회**: 개별 전표 상세 내역 확인
-- 💾 **SQL 쿼리 실행**: 직접 SQL 쿼리 실행 가능
-- ✅ **복식부기 검증**: 전표별 차변/대변 균형 검증
+## Supabase 영구 저장 전환
 
-## 🚀 설치 및 실행
+### 1. Supabase 프로젝트 준비
 
-### 1. 필요한 패키지 설치
+Supabase 프로젝트의 **Connect → Session pooler**에서 `postgresql://...` 형식의 연결 주소를 복사합니다. Project URL이나 anon key가 아니라 데이터베이스 연결 주소가 필요합니다.
+
+로컬에서는 `.streamlit/secrets.toml.example`을 `.streamlit/secrets.toml`로 복사한 뒤 값을 넣습니다.
+
+```toml
+SUPABASE_DB_URL = "postgresql://postgres.PROJECT_REF:PASSWORD@POOLER_HOST:5432/postgres?sslmode=require"
+SUPABASE_READER_PASSWORD = "replace-with-a-long-random-reader-password"
+ALLOW_SIGNUP = false
+OPENAI_API_KEY = "sk-..."
+OPENAI_MODEL = "gpt-5.2"
+```
+
+`SUPABASE_READER_PASSWORD`는 기존 로그인과 겹치지 않는 긴 임의 값으로 만드세요. 앱이 실제 `talktodata_reader` DB 계정을 만들고 AI 조회 연결을 물리적으로 분리합니다. 비밀번호가 들어 있는 `secrets.toml`은 GitHub에 올리지 않습니다. 연결 주소나 비밀번호도 채팅에 붙여 넣지 마세요.
+
+### 2. 기존 제조업 데이터 확인 및 이전
+
+먼저 원본 SQLite의 테이블과 행 수만 확인합니다.
+
+```bash
+python migrate_to_supabase.py --dry-run
+```
+
+Supabase 연결값을 설정한 뒤 최초 이전을 실행합니다.
+
+```bash
+python migrate_to_supabase.py
+```
+
+같은 이름의 기존 Supabase 테이블을 새 원본으로 교체해야 할 때만 다음 옵션을 사용합니다.
+
+```bash
+python migrate_to_supabase.py --replace-existing
+```
+
+모든 표는 임시 영역에 먼저 적재·검증되며, 검증이 끝난 뒤 한 번에 교체됩니다. 실패하면 기존 PostgreSQL 데이터는 유지됩니다. 로컬에 `users/users_db.json`이 있으면 계정은 비밀번호 해시로 변환되어 함께 이전됩니다.
+
+### 3. Streamlit Community Cloud 연결
+
+앱의 **Settings → Secrets**에 로컬과 같은 값을 저장한 뒤 배포합니다. 연결값이 없으면 로컬 SQLite 개발 모드로 실행되고, 연결값이 잘못되면 임시 저장소로 조용히 돌아가지 않고 오류를 표시합니다.
+
+운영 데이터는 비공개 `talktodata` 스키마에, 로그인·설정·저장된 표는 비공개 `ttd_meta` 스키마에 보관됩니다. 두 스키마를 Supabase의 Exposed schemas에 추가하지 마세요. AI가 만든 쿼리는 관리자 세션을 재사용하지 않고 별도의 읽기 전용 LOGIN 연결과 제한 시간 안에서만 실행됩니다.
+
+## 로컬 실행
 
 ```bash
 pip install -r requirements.txt
-```
-
-또는 개별 설치:
-
-```bash
-pip install streamlit pandas openpyxl
-```
-
-### 2. 데이터베이스 준비
-
-먼저 데이터베이스를 생성하고 데이터를 적재하세요:
-
-```bash
-# 샘플 엑셀 파일 생성 (선택사항)
-python create_sample_excel.py
-
-# 데이터베이스 구축 및 데이터 적재
-python setup_db.py
-```
-
-### 3. Streamlit 뷰어 실행
-
-### 3-0. OpenAI API 키 설정 (필수)
-
-- **방법 A) `.streamlit/secrets.toml` 사용**
-  - `.streamlit/secrets.toml.example`을 참고해서 `.streamlit/secrets.toml`을 만들고 `OPENAI_API_KEY`를 넣어주세요.
-- **방법 B) 환경변수 사용 (PowerShell)**
-
-```bash
-$env:OPENAI_API_KEY="your-api-key-here"
-```
-
-### 3. Streamlit 뷰어 실행
-
-```bash
 streamlit run sqlite_viewer.py
 ```
 
-브라우저가 자동으로 열리며 `http://localhost:8501`에서 뷰어에 접속할 수 있습니다.
+브라우저에서 `http://localhost:8501`을 엽니다.
 
-## 📁 파일 구조
+## 구성
 
-```
-.
-├── setup_db.py              # DB 초기화 및 엑셀 Import 스크립트
-├── create_sample_excel.py   # 샘플 엑셀 파일 생성 스크립트
-├── sqlite_viewer.py         # Streamlit 기반 DB 뷰어
-├── requirements.txt         # 필요한 패키지 목록
-├── accounting.db            # SQLite 데이터베이스 (자동 생성)
-└── dummy_data.xlsx          # 샘플 엑셀 파일 (선택사항)
-```
-
-## 🗄️ 데이터베이스 스키마
-
-### journal_entries 테이블
-
-| 칼럼명 | 타입 | 설명 |
-|--------|------|------|
-| id | INTEGER | 자동 증가 고유 ID (PK) |
-| journal_id | TEXT | 전표 식별자 (예: J20250115-001) |
-| line_no | INTEGER | 전표 내 순번 |
-| transaction_date | DATE | 거래일자 |
-| account_name | TEXT | 계정명 |
-| account_type | TEXT | 계정유형 (자산/부채/자본/수익/비용) |
-| client_name | TEXT | 거래처명 |
-| description | TEXT | 설명 |
-| debit_amount | INTEGER | 차변 금액 |
-| credit_amount | INTEGER | 대변 금액 |
-| department | TEXT | 부서 |
-| category | TEXT | 카테고리 |
-
-## 📊 사용 예시
-
-### 대시보드
-- 전체 통계 요약 확인
-- 계정유형별 거래 분석
-- 최근 전표 목록
-
-### 전표별 조회
-- 특정 전표 선택하여 상세 내역 확인
-- 복식부기 원칙 준수 여부 검증
-
-### SQL 쿼리 실행
-```sql
--- 계정유형별 합계
-SELECT account_type,
-       SUM(debit_amount) as 차변합계,
-       SUM(credit_amount) as 대변합계
-FROM journal_entries
-GROUP BY account_type;
+```text
+sqlite_viewer.py              Streamlit 앱
+persistent_db.py              SQLite/PostgreSQL 공통 저장 계층
+migrate_to_supabase.py        최초 데이터 이전·검증 도구
+config_manager.py             테이블·컬럼 설정 관리
+accounting.db                 로컬 개발 및 최초 이전용 제조업 데이터
+.streamlit/secrets.toml.example  비밀값 형식 예시
 ```
 
-## ⚠️ 주의사항
+## 보안 메모
 
-- SQL 쿼리 실행은 SELECT 쿼리만 허용됩니다 (보안상의 이유)
-- 복식부기 원칙: 각 전표의 차변 합계 = 대변 합계
-
-## 📝 라이센스
-
-이 프로젝트는 회계 감사 시스템을 위한 내부 도구입니다.
-
+- SQL 실행은 `SELECT`와 읽기 전용 `WITH` 한 개만 허용합니다.
+- 공개 회원가입은 운영 모드에서 기본적으로 꺼져 있습니다. 필요한 동안만 `ALLOW_SIGNUP = true`로 바꾸고 계정을 만든 뒤 다시 끄세요.
+- 과거 Git 기록에 들어간 비밀번호를 다른 곳에서도 사용했다면 반드시 변경해야 합니다.
+- 데이터베이스 백업은 Supabase 프로젝트 정책에 맞춰 별도로 관리하세요.

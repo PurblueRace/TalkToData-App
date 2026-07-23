@@ -1,7 +1,7 @@
-import sqlite3
 import pandas as pd
-import os
 from pathlib import Path
+
+from persistent_db import read_dataframe, replace_dataframes
 
 # DB 경로 설정
 SCRIPT_DIR = Path(__file__).parent.absolute()
@@ -42,16 +42,16 @@ def get_account_type(code, name):
 
 def normalize_database():
     print(f"📂 데이터베이스 연결: {DB_PATH}")
-    conn = sqlite3.connect(DB_PATH)
     
     # 1. 원본 데이터 읽기
     try:
-        df_journal = pd.read_sql("SELECT * FROM 회계전표", conn)
+        df_journal = read_dataframe('SELECT * FROM "회계전표"', DB_PATH)
         print(f"✅ 원본 데이터 로드 완료: {len(df_journal)}건")
     except Exception as e:
         print(f"❌ 오류: '회계전표' 테이블을 찾을 수 없습니다. ({e})")
-        conn.close()
         return
+
+    normalized_tables = {}
 
     # 2. 계정과목 테이블 생성
     print("🔨 계정과목 테이블 생성 중...")
@@ -61,7 +61,7 @@ def normalize_database():
         df_accounts['비고'] = '' # 추가 컬럼
         df_accounts['사용여부'] = 'Y' # 추가 컬럼
         
-        df_accounts.to_sql('계정과목', conn, if_exists='replace', index=False)
+        normalized_tables['계정과목'] = df_accounts
         print(f"   - 계정과목 {len(df_accounts)}개 생성 완료")
 
     # 3. 거래처 테이블 생성
@@ -78,7 +78,7 @@ def normalize_database():
         df_clients['담당자'] = ''
         df_clients['이메일'] = ''
         
-        df_clients.to_sql('거래처', conn, if_exists='replace', index=False)
+        normalized_tables['거래처'] = df_clients
         print(f"   - 거래처 {len(df_clients)}개 생성 완료")
 
     # 4. 부서 테이블 생성
@@ -90,7 +90,7 @@ def normalize_database():
         df_depts['위치'] = ''
         df_depts['전화번호'] = ''
         
-        df_depts.to_sql('부서', conn, if_exists='replace', index=False)
+        normalized_tables['부서'] = df_depts
         print(f"   - 부서 {len(df_depts)}개 생성 완료")
 
     # 5. 프로젝트 테이블 생성
@@ -106,7 +106,7 @@ def normalize_database():
             df_projects['PM'] = ''
             df_projects['예산'] = 0
             
-            df_projects.to_sql('프로젝트', conn, if_exists='replace', index=False)
+            normalized_tables['프로젝트'] = df_projects
             print(f"   - 프로젝트 {len(df_projects)}개 생성 완료")
         else:
             print("   - 프로젝트 데이터가 없습니다.")
@@ -139,10 +139,10 @@ def normalize_database():
     df_normalized = df_journal[valid_cols].copy()
     
     # 전표내역 테이블로 저장
-    df_normalized.to_sql('전표내역', conn, if_exists='replace', index=False)
+    normalized_tables['전표내역'] = df_normalized
     print(f"   - 전표내역 {len(df_normalized)}건 생성 완료")
     
-    conn.close()
+    replace_dataframes(normalized_tables, DB_PATH)
     print("\n✨ 모든 작업이 완료되었습니다!")
 
 if __name__ == "__main__":

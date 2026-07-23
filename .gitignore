@@ -1,0 +1,11 @@
+.env
+.venv/
+.testdeps/
+__pycache__/
+*.py[cod]
+
+# Secrets and per-user runtime data
+.streamlit/secrets.toml
+users/
+config.bak
+config.tmp

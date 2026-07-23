@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 import re
 
+from persistent_db import (
+    PersistenceError,
+    is_remote_database,
+    load_app_setting,
+    save_app_setting,
+)
+
 # Config 파일 경로
 CONFIG_PATH = Path(__file__).parent / 'config.json'
 
@@ -33,65 +40,58 @@ DEFAULT_COLUMN_KEYWORDS = {
 }
 
 
-def load_config() -> Dict:
-    """
-    config.json 파일을 읽어서 반환
-    파일이 없으면 기본 구조 생성
-    UTF-8 인코딩 사용
-    """
+def _default_config() -> Dict:
+    return {
+        "required_columns": {},
+        "table_aliases": {},
+        "column_keywords": DEFAULT_COLUMN_KEYWORDS.copy(),
+        "managed_tables": [],
+    }
+
+
+def _normalize_config(config: object) -> Dict:
+    if not isinstance(config, dict):
+        config = {}
+    normalized = dict(config)
+    if not isinstance(normalized.get("required_columns"), dict):
+        normalized["required_columns"] = {}
+    if not isinstance(normalized.get("table_aliases"), dict):
+        normalized["table_aliases"] = {}
+    if not isinstance(normalized.get("column_keywords"), dict):
+        normalized["column_keywords"] = DEFAULT_COLUMN_KEYWORDS.copy()
+    if not isinstance(normalized.get("managed_tables"), list):
+        normalized["managed_tables"] = []
+    return normalized
+
+
+def _load_local_config() -> Dict:
+    if not CONFIG_PATH.exists():
+        return _default_config()
     try:
-        if CONFIG_PATH.exists():
-            try:
-                with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-            except UnicodeDecodeError:
-                # UTF-8 실패 시 cp949 시도
-                print("⚠️ UTF-8 인코딩 실패, cp949로 재시도...")
-                with open(CONFIG_PATH, 'r', encoding='cp949') as f:
-                    config = json.load(f)
-            
-            # 기본 구조 확인 및 보완
-            if not isinstance(config, dict):
-                config = {}
-                
-            if "required_columns" not in config or not isinstance(config["required_columns"], dict):
-                config["required_columns"] = {}
-            if "table_aliases" not in config or not isinstance(config["table_aliases"], dict):
-                config["table_aliases"] = {}
-            if "column_keywords" not in config or not isinstance(config["column_keywords"], dict):
-                config["column_keywords"] = DEFAULT_COLUMN_KEYWORDS.copy()
-            if "managed_tables" not in config or not isinstance(config["managed_tables"], list):
-                config["managed_tables"] = []
-            
-            return config
-        else:
-            # 파일이 없으면 기본 구조 생성
-            default_config = {
-                "required_columns": {},
-                "table_aliases": {},
-                "column_keywords": DEFAULT_COLUMN_KEYWORDS.copy(),
-                "managed_tables": []
-            }
-            save_config(default_config)
-            return default_config
-    except json.JSONDecodeError as e:
-        print(f"⚠️ Config JSON 파싱 오류: {e}")
-        # JSON 파싱 오류 시 기본 구조 반환
-        return {
-            "required_columns": {},
-            "table_aliases": {},
-            "column_keywords": DEFAULT_COLUMN_KEYWORDS.copy(),
-            "managed_tables": []
-        }
-    except Exception as e:
-        print(f"⚠️ Config 로드 오류: {e}")
-        # 오류 발생 시 기본 구조 반환
-        return {
-            "required_columns": {},
-            "table_aliases": {},
-            "column_keywords": DEFAULT_COLUMN_KEYWORDS.copy(),
-            "managed_tables": []
-        }
+        with open(CONFIG_PATH, "r", encoding="utf-8") as file:
+            return _normalize_config(json.load(file))
+    except UnicodeDecodeError:
+        with open(CONFIG_PATH, "r", encoding="cp949") as file:
+            return _normalize_config(json.load(file))
+
+
+def load_config() -> Dict:
+    """Load mutable config from PostgreSQL, with a local-only dev fallback."""
+    try:
+        local_config = _load_local_config()
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"⚠️ 로컬 Config 로드 오류: {exc}")
+        local_config = _default_config()
+
+    if not is_remote_database():
+        return local_config
+
+    # A configured remote store must not silently fall back to an ephemeral file.
+    remote_config = load_app_setting("config")
+    if remote_config is None:
+        save_app_setting("config", local_config)
+        return local_config
+    return _normalize_config(remote_config)
 
 
 def save_config(config: Dict) -> bool:
@@ -100,10 +100,14 @@ def save_config(config: Dict) -> bool:
     UTF-8 인코딩 사용, 에러 처리 강화
     """
     try:
-        # 입력 검증
         if not isinstance(config, dict):
             print(f"❌ Config는 dict 타입이어야 합니다. 현재 타입: {type(config)}")
             return False
+
+        normalized = _normalize_config(config)
+        if is_remote_database():
+            save_app_setting("config", normalized)
+            return True
         
         # 디렉토리가 없으면 생성
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -113,7 +117,7 @@ def save_config(config: Dict) -> bool:
         
         # JSON 파일 저장 (UTF-8, 들여쓰기 2칸, ensure_ascii=False로 한글 유지)
         with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+            json.dump(normalized, f, ensure_ascii=False, indent=2)
         
         # 원본 파일 백업 (존재하는 경우)
         if CONFIG_PATH.exists():
@@ -125,6 +129,8 @@ def save_config(config: Dict) -> bool:
         temp_path.replace(CONFIG_PATH)
         
         return True
+    except PersistenceError:
+        raise
     except PermissionError as e:
         print(f"❌ Config 저장 권한 오류: {e}")
         print(f"   파일 경로: {CONFIG_PATH}")
