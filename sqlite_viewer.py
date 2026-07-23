@@ -13,9 +13,12 @@ import io
 import textwrap
 import html
 import hmac
+import secrets
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
+
+from app_access import PUBLIC_WORKSPACE_USERNAME, parse_flag
 
 from persistent_db import (
     PersistenceError,
@@ -2514,6 +2517,10 @@ def save_tables_to_file(saved_tables: List[Dict], username: str) -> bool:
             tables_data.append(table_data)
 
         if is_remote_database():
+            # 공개 모드는 실제 로그인 계정과 분리된 공용 작업공간을 사용한다.
+            # 저장 시점에만 예약 계정을 만들며, 임의 비밀번호는 보관하거나 노출하지 않는다.
+            if username == PUBLIC_WORKSPACE_USERNAME:
+                remote_create_user(username, secrets.token_urlsafe(48))
             save_remote_tables(username, tables_data)
             return True
 
@@ -2563,17 +2570,27 @@ def load_tables_from_file(username: str) -> List[Dict]:
 # ============================================================
 # 로그인 페이지 렌더링
 # ============================================================
+def runtime_flag(name: str, default: bool = False) -> bool:
+    """환경변수 또는 Streamlit Secrets에서 불리언 설정을 읽는다."""
+    value = os.getenv(name)
+    if value is None:
+        try:
+            value = st.secrets.get(name)
+        except Exception:
+            value = None
+    return parse_flag(value, default=default)
+
+
+def is_auth_required() -> bool:
+    """AUTH_REQUIRED=true일 때만 로그인 화면을 활성화한다."""
+    return runtime_flag("AUTH_REQUIRED", default=False)
+
+
 def is_signup_allowed() -> bool:
     """Disable public registration by default on the deployed app."""
     if not is_remote_database():
         return True
-    value = os.getenv("ALLOW_SIGNUP")
-    if value is None:
-        try:
-            value = st.secrets.get("ALLOW_SIGNUP")
-        except Exception:
-            value = None
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    return runtime_flag("ALLOW_SIGNUP", default=False)
 
 
 def render_login_page():
@@ -6497,9 +6514,21 @@ def main():
     if not is_remote_database():
         init_users_directory()  # 로컬 개발용 사용자 디렉토리
     check_database()
-    
-    # 로그인은 브라우저 세션에서만 유지한다. 서버 공용 파일 자동 로그인은 사용하지 않는다.
-    if 'logged_in' not in st.session_state or not st.session_state.get('logged_in'):
+
+    auth_required = is_auth_required()
+
+    # 공개 모드와 로그인 모드 사이를 전환할 때 이전 세션 자료가 섞이지 않게 초기화한다.
+    if auth_required and st.session_state.get('username') == PUBLIC_WORKSPACE_USERNAME:
+        st.session_state.logged_in = False
+        st.session_state.username = None
+        st.session_state.saved_tables = []
+    elif not auth_required and st.session_state.get('username') != PUBLIC_WORKSPACE_USERNAME:
+        st.session_state.logged_in = True
+        st.session_state.username = PUBLIC_WORKSPACE_USERNAME
+        st.session_state.saved_tables = []
+
+    # AUTH_REQUIRED=true일 때만 브라우저 세션 로그인을 요구한다.
+    if auth_required and not st.session_state.get('logged_in'):
         render_login_page()
         return
     
@@ -6517,28 +6546,31 @@ def main():
         else:
             st.warning("로컬 임시 저장 모드 · 배포 시 데이터가 사라질 수 있습니다.")
 
-        # 로그인 정보 표시
-        st.markdown(f"""
-        <div style="
-            padding: 0.75rem;
-            margin-bottom: 1rem;
-            background: #f8f9fa;
-            border-radius: 6px;
-            border: 1px solid #e5e7eb;
-        ">
-            <p style="margin: 0; font-size: 0.85rem; color: #64748b;">
-                <strong>👤 {username}</strong>
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # 로그아웃 버튼
-        if st.button("🚪 로그아웃", use_container_width=True):
-            st.session_state['logged_in'] = False
-            st.session_state.pop('username', None)
-            st.session_state.pop('saved_tables', None)
-            st.session_state.messages = []
-            st.rerun()
+        if auth_required:
+            # 로그인 정보 표시
+            st.markdown(f"""
+            <div style="
+                padding: 0.75rem;
+                margin-bottom: 1rem;
+                background: #f8f9fa;
+                border-radius: 6px;
+                border: 1px solid #e5e7eb;
+            ">
+                <p style="margin: 0; font-size: 0.85rem; color: #64748b;">
+                    <strong>👤 {username}</strong>
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # 로그아웃 버튼
+            if st.button("🚪 로그아웃", use_container_width=True):
+                st.session_state['logged_in'] = False
+                st.session_state.pop('username', None)
+                st.session_state.pop('saved_tables', None)
+                st.session_state.messages = []
+                st.rerun()
+        else:
+            st.info("공개 모드 · 로그인 없이 모든 기능을 사용할 수 있습니다.")
         
         st.markdown("---")
         # ⭐ 로고/제목 (하얀 배경에 맞게)
