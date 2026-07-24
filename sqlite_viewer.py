@@ -1083,6 +1083,19 @@ st.markdown("""
     /* ==========================================
        Dashboard workspace tabs
        ========================================== */
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-query_progress_top {
+        position: sticky !important;
+        top: 0.75rem !important;
+        z-index: 1000 !important;
+    }
+
+    section[data-testid="stMain"]:has(.st-key-main_search) .st-key-query_progress_top [data-testid="stStatusWidget"] {
+        border: 1px solid #b2ccff !important;
+        border-radius: 12px !important;
+        background: #eff6ff !important;
+        box-shadow: 0 8px 24px rgba(16, 24, 40, 0.12) !important;
+    }
+
     section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] [role="tablist"],
     section[data-testid="stMain"]:has(.st-key-main_search) div[data-testid="stTabs"] div[data-baseweb="tab-list"] {
         display: flex !important;
@@ -2899,6 +2912,10 @@ def render_dashboard_section_header(title: str, description: str, meta: str = ""
 
 def render_dashboard_page():
     """대시보드 페이지 - 채팅창과 그래프"""
+    # 쿼리 생성·실행 중에는 이 최상단 슬롯에 진행 상태를 표시한다.
+    with st.container(key="query_progress_top"):
+        query_progress_slot = st.empty()
+
     # 헤더 - 제목 (중앙 정렬)
     st.markdown("<h1 style='text-align: center; color: black;'>TalkToData</h1>", unsafe_allow_html=True)
     
@@ -3016,7 +3033,9 @@ def render_dashboard_page():
     st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
     
     # 탭 구성 (항상 표시)
-    tab1, tab2, tab3, tab4 = st.tabs(["SQL · 데이터", "저장된 표", "AI 분석", "시각화"])
+    tab_sql, tab_saved, tab_visualization, tab_ai_analysis = st.tabs(
+        ["① SQL · 데이터", "② 저장된 표", "③ 시각화", "④ AI 분석"]
+    )
     
     # 메시지 처리 (탭 외부에서 사용자 메시지 표시)
     if st.session_state.messages:
@@ -3045,7 +3064,7 @@ def render_dashboard_page():
                 break
 
     # [탭 1] SQL & 데이터
-    with tab1:
+    with tab_sql:
         if current_sql_query:
             if current_sql_error:
                 st.error(f"쿼리를 실행하지 못했습니다: {current_sql_error}")
@@ -3104,7 +3123,7 @@ def render_dashboard_page():
             )
 
     # [탭 2] 저장된 표 관리
-    with tab2:
+    with tab_saved:
         saved_table_count = len(st.session_state.saved_tables)
         render_dashboard_section_header(
             "저장된 표",
@@ -3185,8 +3204,8 @@ def render_dashboard_page():
                         height=table_height
                     )
     
-    # [탭 3] 저장 데이터 종합 분석
-    with tab3:
+    # [탭 4] 저장 데이터 종합 분석
+    with tab_ai_analysis:
         saved_table_count = len(st.session_state.saved_tables)
         render_dashboard_section_header(
             "AI 분석",
@@ -3280,8 +3299,8 @@ def render_dashboard_page():
                 import streamlit.components.v1 as components
                 components.html(saved_report, height=800, scrolling=True)
     
-    # [탭 4] 시각화
-    with tab4:
+    # [탭 3] 시각화
+    with tab_visualization:
         if current_sql_query and not current_df.empty:
             render_dashboard_section_header(
                 "시각화",
@@ -3359,13 +3378,23 @@ def render_dashboard_page():
             'role': 'user',
             'content': query_to_process
         })
-        
+
+        query_run_status = query_progress_slot.status(
+            "SQL을 만들고 있습니다...",
+            state="running",
+            expanded=False,
+        )
+
         # OpenAI로 SQL 생성
-        with st.spinner("🤖 AI가 SQL 쿼리를 생성하고 있습니다..."):
-            sql_query = generate_sql_with_openai(query_to_process)
-        
+        sql_query = generate_sql_with_openai(query_to_process)
+
         # SQL 생성 오류 체크
         if sql_query is None or sql_query.strip() == "":
+            query_run_status.update(
+                label="SQL을 만들지 못했습니다. 질문을 조금 더 구체적으로 입력해 주세요.",
+                state="error",
+                expanded=False,
+            )
             ai_response = "❌ SQL 쿼리가 생성되지 않았습니다.\n\n💡 팁: 질문을 더 구체적으로 작성하거나 다른 표현으로 시도해보세요."
             response_msg = {
                 'role': 'assistant',
@@ -3375,21 +3404,41 @@ def render_dashboard_page():
             st.session_state.messages.append(response_msg)
             st.rerun()
             return
-        
+
         # SQL 쿼리 히스토리에 추가
         if sql_query:
             st.session_state.sql_history.append(sql_query)
-        
+
+        query_run_status.update(
+            label="SQL 생성 완료 · 데이터베이스에서 결과를 조회하고 있습니다...",
+            state="running",
+            expanded=False,
+        )
+
         # SQL 실행
-        with st.spinner("⚡ 쿼리를 실행하고 있습니다..."):
-            df, sql_error = execute_sql_query(sql_query)
-        
+        df, sql_error = execute_sql_query(sql_query)
+
         # 결과 처리
         if sql_error:
+            query_run_status.update(
+                label="쿼리 실행에 실패했습니다. 생성된 SQL과 오류 내용을 확인해 주세요.",
+                state="error",
+                expanded=False,
+            )
             ai_response = f"❌ 쿼리 실행 오류: {sql_error}"
         elif is_effectively_empty_result(df):
+            query_run_status.update(
+                label="조회 완료 · 조건에 맞는 데이터가 없습니다.",
+                state="complete",
+                expanded=False,
+            )
             ai_response = "조회 조건에 맞는 데이터가 0건입니다."
         else:
+            query_run_status.update(
+                label=f"조회 완료 · {len(df):,}행을 가져왔습니다.",
+                state="complete",
+                expanded=False,
+            )
             # 분석 보고서는 버튼을 눌렀을 때만 생성하도록 변경 (API 절약)
             ai_response = None  # 초기에는 보고서 생성하지 않음
         
