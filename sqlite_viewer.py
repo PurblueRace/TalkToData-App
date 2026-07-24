@@ -19,9 +19,19 @@ from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from analysis_context import (
+    build_analysis_context,
+    build_management_analysis_prompts,
+    parse_management_report,
+    render_management_report_html,
+)
 from app_access import PUBLIC_WORKSPACE_USERNAME, parse_flag
 from query_result import is_effectively_empty_result
-from sql_prompt import build_sql_system_prompt, build_sql_user_prompt
+from sql_prompt import (
+    build_schema_blueprint,
+    build_sql_system_prompt,
+    build_sql_user_prompt,
+)
 from visualization_utils import (
     format_compact_value,
     is_composition_question,
@@ -1462,9 +1472,6 @@ def delete_managed_tables() -> int:
     return deleted_count
 
 
-# analyze_question, build_cot_prompt, generate_final_user_prompt 함수 제거됨 (CoT 설명 제거)
-
-
 def generate_sql_from_schema(question: str) -> str:
     """실제 DB 설계도와 회계 의미 규칙을 기반으로 SQL을 생성한다."""
     try:
@@ -1552,9 +1559,6 @@ def generate_sql_complete(user_question: str) -> str:
         return None
 
 
-# build_dynamic_system_prompt() 함수 전체 삭제됨 (토큰 절약 - 600+ 토큰)
-
-
 def generate_sql_with_openai(user_question: str) -> str:
     """OpenAI API를 사용하여 자연어를 SQL 쿼리로 변환 (동적 프롬프트 사용)"""
     # generate_sql_complete 함수 사용 (통합 버전)
@@ -1606,100 +1610,6 @@ def execute_sql_query(sql_query: str) -> Tuple[pd.DataFrame, Optional[str]]:
         return db_read_dataframe(sql_query, DB_PATH), None
     except Exception as e:
         return pd.DataFrame(), str(e)
-
-
-def generate_insight_report(df: pd.DataFrame, user_question: str, sql_query: str) -> str:
-    """OpenAI API를 사용하여 데이터 기반 인사이트 보고서 생성"""
-    global client  # 전역 변수 client 접근
-    
-    if df.empty:
-        return "조회된 데이터가 없습니다."
-    
-    # DataFrame을 요약 통계로 변환 (GPT에게 전달할 컨텍스트)
-    data_summary = f"데이터 건수: {len(df)}건\n\n"
-    data_summary += f"컬럼 목록: {', '.join(df.columns.tolist())}\n\n"
-    
-    # 숫자형 컬럼 통계
-    numeric_cols = df.select_dtypes(include=['number']).columns
-    if len(numeric_cols) > 0:
-        data_summary += "숫자형 컬럼 통계:\n"
-        for col in numeric_cols:
-            data_summary += f"- {col}: 합계={df[col].sum():,.0f}, 평균={df[col].mean():,.0f}, 최대={df[col].max():,.0f}, 최소={df[col].min():,.0f}\n"
-    
-    # 상위 10개 데이터 샘플
-    data_summary += f"\n데이터 샘플 (상위 10건):\n{df.head(10).to_string(index=False)}"
-    
-    # OpenAI API 호출하여 인사이트 보고서 생성
-    try:
-        analysis_prompt = f"""당신은 회계 데이터 분석 전문가입니다. 다음 데이터를 분석하여 구체적이고 실용적인 보고서를 작성하세요.
-
-사용자 질문: {user_question}
-
-실행된 SQL: {sql_query}
-
-데이터 요약: {data_summary}
-
-아래 형식으로 분석 보고서를 작성하세요. 각 섹션은 반드시 구체적인 수치를 포함해야 합니다:
-
-📊 핵심 발견사항
-
-• 가장 중요한 발견 2-3개를 구체적인 수치와 함께 작성
-• 예: "거래처A가 전체의 35%(123,456,789원)를 차지"
-
-📈 추세 분석
-
-• 시간별/항목별 변화 패턴을 수치로 설명
-• 증가/감소율, 전월 대비 변화 등 포함
-
-🚨 이상 징후
-
-• 주의가 필요한 항목이나 비정상적인 패턴
-• 구체적인 거래처명이나 항목명 명시
-
-💡 실행 가능한 제안
-
-• 데이터 기반으로 즉시 실행할 수 있는 액션 아이템 2-3개
-• 예: "거래처B와의 계약 재협상 검토 필요 (비용 30% 증가)"
-
-🎯 핵심 결론 요약 (반드시 작성!)
-
-⚠️ 중요: 아래 형식을 정확히 따를 것! 각 항목은 반드시 새로운 줄에 작성!
-
-1) 첫 번째 핵심 내용 (구체적 숫자 반드시 포함)
-
-2) 두 번째 핵심 내용 (구체적 숫자 반드시 포함)
-
-3) 세 번째 핵심 내용 (구체적 숫자 반드시 포함)
-
-예시:
-1) 총 매출 120,000,000원 (전월 대비 +15% 증가)
-2) 상위 3개 거래처가 전체의 60% 차지 (72,000,000원)
-3) IT 부서 지출 21,000,000원으로 예산 초과 주의
-
-중요 규칙:
-1. 각 섹션은 반드시 이모지(📊📈🚨💡🎯)로 시작
-2. 각 항목은 반드시 불릿(•)으로 시작 (단, 핵심 결론 요약은 1), 2), 3) 형식)
-3. HTML 태그나 코드를 절대 포함하지 마라
-4. 순수 텍스트만 사용해라
-5. 모든 숫자는 천단위 쉼표를 사용하세요
-6. 일반적인 문구 대신 이 데이터의 구체적인 내용만 작성하세요
-7. 핵심 결론 요약의 1), 2), 3)은 반드시 새로운 줄에 작성하세요!
-"""
-        
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "당신은 구체적인 수치 기반 분석을 제공하는 회계 데이터 분석 전문가입니다. 일반적인 문구를 사용하지 말고, 실제 데이터의 구체적인 수치와 인사이트만 제공하세요. 핵심 결론 요약은 반드시 1), 2), 3) 형식으로 각 줄에 작성하세요."},
-                {"role": "user", "content": analysis_prompt}
-            ],
-            max_completion_tokens=1500
-        )
-        
-        insight_report = response.choices[0].message.content.strip()
-        return insight_report
-        
-    except Exception as e:
-        return f"인사이트 생성 오류: {_format_openai_exception(e)}\n\n기본 요약:\n데이터 {len(df)}건 조회됨."
 
 
 def _legacy_create_visualizations(df: pd.DataFrame, user_question: str):
@@ -2785,265 +2695,40 @@ def init_session_state():
 # ============================================================
 # 2. 저장 데이터 종합 분석 함수
 # ============================================================
-def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: str = "", custom_system_prompt: str = None) -> str:
-    """저장된 여러 표를 종합한 경영 분석 보고서를 생성합니다."""
+def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: str = "") -> str:
+    """저장된 SQL 결과의 전체 프로파일과 관계를 바탕으로 경영 분석을 생성합니다."""
     global client
-    
+
     if not saved_tables:
         return "저장된 표가 없습니다."
 
-    # 1. 저장된 데이터들을 텍스트로 변환
-    combined_data_context = ""
-    for idx, item in enumerate(saved_tables):
-        df = item['data']
-        query = item['query']
-        timestamp = item.get('timestamp', '')
-        
-        combined_data_context += f"\n[데이터셋 #{idx+1} | 저장일시: {timestamp}]\n"
-        combined_data_context += f"- 사용자 질문: {query}\n"
-        combined_data_context += f"- 데이터 요약 (상위 10행):\n{df.head(10).to_string(index=False)}\n"
-        
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if len(numeric_cols) > 0:
-             stats = [f"{c} 합계={df[c].sum():,.0f}" for c in numeric_cols]
-             combined_data_context += f"- 주요 수치 통계: {', '.join(stats)}\n"
-        combined_data_context += "-" * 50 + "\n"
-
-    # 2. 시스템 프롬프트: 제공된 데이터에 근거한 간결한 HTML 보고서
-    if custom_system_prompt:
-        system_prompt = custom_system_prompt
-    else:
-        system_prompt = """
-    당신은 경영진이 빠르게 판단할 수 있도록 복잡한 표를 명료하게 정리하는 데이터 분석가입니다.
-
-    다음 원칙을 반드시 지키세요.
-    1. 제공된 저장 데이터만 근거로 사용하고, 외부 검색을 했다고 주장하거나 확인되지 않은 사실을 만들지 마세요.
-    2. 데이터에서 직접 확인되는 사실과 분석적 해석을 명확히 구분하세요.
-    3. 핵심 결론을 먼저 제시하고 전체 분량은 약 800~1200단어로 제한하세요.
-    4. 결과는 Markdown이 아닌 순수 HTML만 출력하세요.
-    5. 이모지, 그라데이션, 색상 배지, 강한 그림자, 과도한 강조색을 사용하지 마세요.
-    6. 흰 배경, 얇은 회색 구분선, 단일 열 구조로 읽기 쉬운 보고서를 만드세요.
-    """
-
-    # 3. 사용자 프롬프트: 구체적인 디자인 가이드라인 제공
-    additional_context = f"\n\n[사용자 추가 요청사항]\n{additional_prompt}\n" if additional_prompt else ""
-    
-    user_prompt = f"""
-    아래 [저장된 표 데이터]를 **기반(base)**으로 하여 종합 경영 인사이트 보고서를 작성해줘.
-    표 데이터는 분석의 핵심 근거이며, 모든 인사이트는 이 데이터에서 도출되어야 합니다.
-    
-    **필수 요구사항:**
-    1. 제공된 표의 수치와 관계를 우선 분석하고 중요한 변화나 이상 징후를 구체적으로 설명하세요.
-    2. 확인 가능한 데이터 사실과 그 사실에서 도출한 해석을 구분하세요.
-    3. 핵심 요약 3개, 데이터 근거, 주요 리스크와 기회, 실행 제안 순서로 구성하세요.
-    4. 실행 제안에는 우선순위, 담당 역할, 확인할 지표를 포함하되 데이터로 뒷받침되지 않는 수치를 만들지 마세요.
-    5. 전체 분량은 약 800~1200단어로 제한하고 반복 설명을 피하세요.
-       
-    {additional_context}
-    
-    [디자인 요구사항]
-    1. 흰색 배경, 12px 모서리, 얇은 #e4e7ec 테두리의 단일 열 구조를 사용할 것.
-    2. 제목은 단색 #101828, 본문은 #344054, 보조 문구는 #667085를 사용할 것.
-    3. 각 섹션은 배경색 카드 대신 충분한 여백과 얇은 구분선으로 나눌 것.
-    4. 이모지, 그라데이션, 색상 배지, 강한 그림자와 과도한 강조색을 사용하지 말 것.
-    5. 모든 텍스트는 가독성을 위해 적절한 줄간격(line-height: 1.6)을 유지할 것.
-    6. **절대 Markdown 코드 블록(```html)을 사용하지 말고, 순수 HTML 코드만 출력할 것.**
-
-    [분석 대상 데이터]
-    {combined_data_context}
-
-    [보고서 구조 (HTML)]
-    <div style="font-family: 'Pretendard', sans-serif; background: #ffffff; padding: 2.5rem; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; color: #1e293b;">
-        <div style="border-bottom: 2px solid #f1f5f9; padding-bottom: 1.5rem; margin-bottom: 2rem; text-align: center;">
-            <h2 style="font-size: 1.8rem; font-weight: 800; margin: 0; background: linear-gradient(135deg, #1e293b 0%, #334155 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">🚀 종합 시장 및 경영 인사이트</h2>
-            <p style="color: #64748b; font-size: 0.95rem; margin-top: 0.5rem;">Data Intelligence & Strategic Report</p>
-        </div>
-
-        <!-- 1. 데이터 융합 섹션 -->
-        <div style="margin-bottom: 2rem;">
-            <h3 style="font-size: 1.2rem; font-weight: 700; color: #0f172a; margin-bottom: 1rem; display: flex; align-items: center;">
-                <span style="background: #eff6ff; color: #3b82f6; padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.9rem; margin-right: 0.5rem;">01</span>
-                🔗 데이터 융합 및 시사점
-            </h3>
-            <div style="background: #f8fafc; padding: 1.5rem; border-radius: 12px; font-size: 0.95rem; color: #334155; line-height: 1.8;">
-                <p style="margin: 0 0 1rem 0;">
-                    저장된 여러 데이터셋을 종합 분석한 결과, 다음과 같은 핵심 인사이트를 도출할 수 있습니다. 
-                    표 간의 연관성과 상호작용을 깊이 있게 분석하고, 각 수치의 의미를 상세히 설명해야 합니다.
-                    핵심 수치는 <b>굵게</b> 표시하여 강조하세요.
-                </p>
-                <p style="margin: 0;">
-                    (여기에 각 데이터셋 간의 상관관계, 인과관계, 패턴, 이상 징후 등을 상세히 분석. 
-                    각 데이터 포인트의 의미와 비즈니스 임팩트를 구체적으로 설명. 
-                    최소 3-4개 문단으로 구성된 깊이 있는 분석 포함)
-                </p>
-            </div>
-        </div>
-
-        <!-- 2. 시장 동향 섹션 -->
-        <div style="margin-bottom: 2rem;">
-            <h3 style="font-size: 1.2rem; font-weight: 700; color: #0f172a; margin-bottom: 1rem; display: flex; align-items: center;">
-                <span style="background: #f0fdf4; color: #22c55e; padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.9rem; margin-right: 0.5rem;">02</span>
-                📰 시장 동향 (Market Context)
-            </h3>
-            <div style="line-height: 1.7; font-size: 0.95rem;">
-                (실제 검색한 최신 업계 뉴스, 트렌드, 리포트를 기반으로 한 상세 분석 내용. 최소 3개 이상의 구체적인 시장 트렌드를 제시)
-            </div>
-            <div style="margin-top: 1rem; padding: 1rem; background: #f8fafc; border-radius: 8px; border-left: 4px solid #22c55e;">
-                <p style="margin: 0; font-size: 0.85rem; color: #64748b; font-weight: 600;">📚 참고 자료:</p>
-                <ul style="margin: 0.5rem 0 0 0; padding-left: 1.5rem; font-size: 0.85rem; color: #64748b;">
-                    <li>(인용한 기사/논문/리포트 출처를 여기에 명시)</li>
-                </ul>
-            </div>
-        </div>
-
-        <!-- 3. 리스크 및 기회 -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem;">
-            <div style="background: #fef2f2; padding: 1.5rem; border-radius: 12px; border: 1px solid #fee2e2;">
-                <h4 style="color: #991b1b; margin: 0 0 1rem 0; font-size: 1rem; font-weight: 700;">🚨 핵심 리스크 (Risk)</h4>
-                <div style="font-size: 0.9rem; color: #7f1d1d; line-height: 1.8;">
-                    <div style="margin-bottom: 1.2rem; padding-bottom: 1rem; border-bottom: 1px solid #fecaca;">
-                        <strong style="display: block; margin-bottom: 0.5rem;">리스크 1: (제목)</strong>
-                        <p style="margin: 0; line-height: 1.7;">(각 리스크를 3-4줄 이상 상세히 설명. 발생 가능성, 영향도, 시기 등을 포함)</p>
-                    </div>
-                    <div style="margin-bottom: 1.2rem; padding-bottom: 1rem; border-bottom: 1px solid #fecaca;">
-                        <strong style="display: block; margin-bottom: 0.5rem;">리스크 2: (제목)</strong>
-                        <p style="margin: 0; line-height: 1.7;">(상세 설명)</p>
-                    </div>
-                    <div>
-                        <strong style="display: block; margin-bottom: 0.5rem;">리스크 3: (제목)</strong>
-                        <p style="margin: 0; line-height: 1.7;">(상세 설명)</p>
-                    </div>
-                </div>
-            </div>
-            <div style="background: #eff6ff; padding: 1.5rem; border-radius: 12px; border: 1px solid #dbeafe;">
-                <h4 style="color: #1e40af; margin: 0 0 1rem 0; font-size: 1rem; font-weight: 700;">🚀 성장 기회 (Opportunity)</h4>
-                <div style="font-size: 0.9rem; color: #1e3a8a; line-height: 1.8;">
-                    <div style="margin-bottom: 1.2rem; padding-bottom: 1rem; border-bottom: 1px solid #bfdbfe;">
-                        <strong style="display: block; margin-bottom: 0.5rem;">기회 1: (제목)</strong>
-                        <p style="margin: 0; line-height: 1.7;">(각 기회를 3-4줄 이상 상세히 설명. 실현 가능성, 예상 효과, 시장 규모 등을 포함)</p>
-                    </div>
-                    <div style="margin-bottom: 1.2rem; padding-bottom: 1rem; border-bottom: 1px solid #bfdbfe;">
-                        <strong style="display: block; margin-bottom: 0.5rem;">기회 2: (제목)</strong>
-                        <p style="margin: 0; line-height: 1.7;">(상세 설명)</p>
-                    </div>
-                    <div>
-                        <strong style="display: block; margin-bottom: 0.5rem;">기회 3: (제목)</strong>
-                        <p style="margin: 0; line-height: 1.7;">(상세 설명)</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 4. 실행 전략 -->
-        <div style="margin-bottom: 2rem;">
-            <h3 style="font-size: 1.2rem; font-weight: 700; color: #0f172a; margin-bottom: 1rem; display: flex; align-items: center;">
-                <span style="background: #fff1f2; color: #e11d48; padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.9rem; margin-right: 0.5rem;">Action</span>
-                🎯 C-Level 실행 전략
-            </h3>
-            <div style="background: #1e293b; color: white; padding: 2rem; border-radius: 12px; font-size: 0.95rem;">
-                <div style="margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid rgba(255,255,255,0.2);">
-                    <h4 style="color: #fbbf24; margin: 0 0 0.8rem 0; font-size: 1.05rem; font-weight: 700;">전략 1: (전략 제목)</h4>
-                    <ul style="margin: 0; padding-left: 1.5rem; line-height: 2.0; list-style-type: disc;">
-                        <li><strong>실행 단계:</strong> (구체적인 단계별 액션)</li>
-                        <li><strong>예상 일정:</strong> (시작일, 완료 목표일)</li>
-                        <li><strong>필요 자원:</strong> (예산, 인력, 시스템 등)</li>
-                        <li><strong>담당 조직:</strong> (부서/팀 명시)</li>
-                        <li><strong>예상 비용:</strong> (구체적 금액 또는 범위)</li>
-                        <li><strong>성공 지표(KPI):</strong> (측정 가능한 지표)</li>
-                        <li><strong>리스크 관리:</strong> (예상 리스크 및 대응 방안)</li>
-                    </ul>
-                </div>
-                <div style="margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid rgba(255,255,255,0.2);">
-                    <h4 style="color: #fbbf24; margin: 0 0 0.8rem 0; font-size: 1.05rem; font-weight: 700;">전략 2: (전략 제목)</h4>
-                    <ul style="margin: 0; padding-left: 1.5rem; line-height: 2.0; list-style-type: disc;">
-                        <li><strong>실행 단계:</strong> (구체적인 단계별 액션)</li>
-                        <li><strong>예상 일정:</strong> (시작일, 완료 목표일)</li>
-                        <li><strong>필요 자원:</strong> (예산, 인력, 시스템 등)</li>
-                        <li><strong>담당 조직:</strong> (부서/팀 명시)</li>
-                        <li><strong>예상 비용:</strong> (구체적 금액 또는 범위)</li>
-                        <li><strong>성공 지표(KPI):</strong> (측정 가능한 지표)</li>
-                        <li><strong>리스크 관리:</strong> (예상 리스크 및 대응 방안)</li>
-                    </ul>
-                </div>
-                <div>
-                    <h4 style="color: #fbbf24; margin: 0 0 0.8rem 0; font-size: 1.05rem; font-weight: 700;">전략 3: (전략 제목)</h4>
-                    <ul style="margin: 0; padding-left: 1.5rem; line-height: 2.0; list-style-type: disc;">
-                        <li><strong>실행 단계:</strong> (구체적인 단계별 액션)</li>
-                        <li><strong>예상 일정:</strong> (시작일, 완료 목표일)</li>
-                        <li><strong>필요 자원:</strong> (예산, 인력, 시스템 등)</li>
-                        <li><strong>담당 조직:</strong> (부서/팀 명시)</li>
-                        <li><strong>예상 비용:</strong> (구체적 금액 또는 범위)</li>
-                        <li><strong>성공 지표(KPI):</strong> (측정 가능한 지표)</li>
-                        <li><strong>리스크 관리:</strong> (예상 리스크 및 대응 방안)</li>
-                    </ul>
-                </div>
-            </div>
-        </div>
-        
-        <!-- 5. 참고문헌 섹션 -->
-        <div style="margin-top: 2rem; padding: 1.5rem; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
-            <h4 style="color: #1e293b; margin: 0 0 1rem 0; font-size: 1rem; font-weight: 700;">📚 참고문헌 및 출처</h4>
-            <div style="font-size: 0.9rem; color: #64748b; line-height: 1.8;">
-                <p style="margin: 0 0 0.5rem 0;">본 보고서 작성 시 참고한 외부 자료 목록:</p>
-                <ul style="margin: 0; padding-left: 1.5rem;">
-                    <li>(기사/논문/리포트 출처 1)</li>
-                    <li>(기사/논문/리포트 출처 2)</li>
-                    <li>(기사/논문/리포트 출처 3)</li>
-                </ul>
-            </div>
-        </div>
-    </div>
-    """
-
-    # 레거시 예시 대신 실제 모델에는 간결하고 중립적인 최종 프롬프트만 전달
-    user_prompt = f"""
-    아래 저장 데이터를 바탕으로 경영진용 종합 분석 보고서를 작성하세요.
-
-    [분석 대상 데이터]
-    {combined_data_context}
-
-    {additional_context}
-
-    [내용 구성]
-    1. 핵심 요약: 가장 중요한 결론 3개
-    2. 데이터 근거: 표 사이의 관계, 주요 수치, 변화 또는 이상 징후
-    3. 리스크와 기회: 데이터에서 합리적으로 도출할 수 있는 항목
-    4. 실행 제안: 우선순위, 담당 역할, 확인할 지표가 포함된 구체적인 다음 단계
-
-    [출력 규칙]
-    - 외부 기사, 뉴스, 논문을 검색하거나 인용했다고 주장하지 말고 제공된 데이터만 분석할 것.
-    - 확인 가능한 데이터 사실과 분석적 해석을 명확히 구분할 것.
-    - 이모지, 그라데이션 제목, 번호/상태 배지, 강한 색상 패널을 모두 제거할 것.
-    - 흰 배경의 단일 열 레이아웃, #e4e7ec 구분선, 10~12px 모서리를 사용할 것.
-    - 리스크와 기회는 중립적인 목록과 얇은 구분선으로 표현할 것.
-    - 제목과 항목명을 자연스러운 한국어로 통일하고 전체 분량은 800~1200단어로 제한할 것.
-    - Markdown 코드 블록 없이 순수 HTML만 반환할 것.
-    """
-
     try:
+        try:
+            live_schema = get_db_schema()
+            schema_blueprint = build_schema_blueprint(live_schema) if live_schema else ""
+        except Exception:
+            schema_blueprint = ""
+
+        analysis_context = build_analysis_context(
+            saved_tables,
+            schema_blueprint=schema_blueprint,
+        )
+        system_prompt, user_prompt = build_management_analysis_prompts(
+            analysis_context,
+            additional_prompt=additional_prompt,
+        )
+
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ],
-            max_completion_tokens=8000
+            max_completion_tokens=6000,
         )
-        # HTML 렌더링을 위해 반환값 그대로 전달
-        html_content = response.choices[0].message.content.strip()
-        
-        # 마크다운 코드 블록 제거 (```html 또는 ```로 감싸진 경우)
-        if html_content.startswith('```'):
-            # 코드 블록 시작과 끝 제거
-            lines = html_content.split('\n')
-            # 첫 줄(```html 등)과 마지막 줄(```) 제거
-            if lines[0].startswith('```'):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == '```':
-                lines = lines[:-1]
-            html_content = '\n'.join(lines)
-        
-        return html_content
+        raw_content = response.choices[0].message.content
+        report = parse_management_report(raw_content or "")
+        return render_management_report_html(report)
     except Exception as e:
         safe_error = html.escape(_format_openai_exception(e))
         return (
@@ -3051,7 +2736,6 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
             "background:#f9fafb;color:#475467;font-family:Pretendard,sans-serif;font-size:14px;'>"
             f"분석을 완료하지 못했습니다. {safe_error}</div>"
         )
-
 
 def check_table_exists(table_name: str) -> bool:
     """테이블 존재 여부 확인"""
@@ -3531,7 +3215,7 @@ def render_dashboard_page():
                 <div class="ai-workspace__intro">
                     <div class="ai-workspace__title">분석 설정</div>
                     <div class="ai-workspace__description">
-                        함께 비교할 저장 데이터를 고르고, 필요한 경우 분석 관점을 덧붙여 주세요.
+                        각 표의 질문·SQL·전체 컬럼을 읽고 값의 분포와 표 사이의 연결 근거를 함께 분석합니다.
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -3553,7 +3237,7 @@ def render_dashboard_page():
                 )
 
                 st.markdown(
-                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개를 내부 데이터에 근거해 종합합니다.</div>',
+                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개 · 전체 행으로 통계와 추세를 계산하고, 작은 표는 모든 값, 큰 표는 대표값을 AI에 전달합니다. 민감정보 컬럼은 자동으로 가립니다.</div>',
                     unsafe_allow_html=True
                 )
 
