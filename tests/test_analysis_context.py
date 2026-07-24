@@ -346,10 +346,12 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         self.assertIn("순수한 HTML", system_prompt)
         self.assertIn("data-table", system_prompt + user_prompt)
         self.assertIn('"핵심 진단" data-table', user_prompt)
-        self.assertIn('"리스크와 기회" data-table', user_prompt)
         self.assertIn("모든 주요 섹션", user_prompt)
         self.assertIn("2열 배치를 사용하지 않는다", user_prompt)
         self.assertIn("근거가 부족한 섹션의 한계 안내", system_prompt)
+        self.assertIn('"표 간 관계와 비교 가능성" 및 "리스크와 기회"', system_prompt)
+        self.assertNotIn('4. "표 간 관계와 비교 가능성"', user_prompt)
+        self.assertNotIn('"리스크와 기회" data-table', user_prompt)
         self.assertNotIn("실제 검색한 최신 업계 뉴스", system_prompt + user_prompt)
         self.assertNotIn("linear-gradient", system_prompt + user_prompt)
 
@@ -457,14 +459,97 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
                     "validation": {"metric": "매출", "timeframe": "다음 달"},
                 }
             ],
+            "cross_table_insights": ["화면에서 제거할 관계 섹션"],
+            "risks": ["화면에서 제거할 리스크 섹션"],
+            "opportunities": ["화면에서 제거할 기회 섹션"],
         }
 
         rendered = render_management_report_html(report)
 
         self.assertIn("매출 증가", rendered)
         self.assertIn("2025년 100", rendered)
+        self.assertNotIn("화면에서 제거할 관계 섹션", rendered)
+        self.assertNotIn("화면에서 제거할 리스크 섹션", rendered)
+        self.assertNotIn("화면에서 제거할 기회 섹션", rendered)
         self.assertNotIn("['", rendered)
         self.assertNotIn("{'", rendered)
+
+    def test_hidden_management_sections_are_removed_from_html_reports(self):
+        raw = """
+        <section class="report-section">
+          <h2 class="section-heading">핵심 진단</h2>
+          <table><tr><th>진단</th></tr><tr><td>유지할 내용</td></tr></table>
+        </section>
+        <section class="report-section">
+          <h2 class="section-heading">표 간 관계와 비교 가능성</h2>
+          <table><tr><td>제거할 관계 내용</td></tr></table>
+        </section>
+        <div class="report-section">
+          <h2 class="section-heading">리스크 및 기회</h2>
+          <table><tr><td>제거할 리스크 내용</td></tr></table>
+        </div>
+        <section class="report-section">
+          <h2 class="section-heading">실행 계획</h2>
+          <table><tr><th>과제</th></tr><tr><td>유지할 실행 내용</td></tr></table>
+        </section>
+        """
+
+        rendered = render_management_report_html(parse_management_report(raw))
+
+        self.assertIn("유지할 내용", rendered)
+        self.assertIn("유지할 실행 내용", rendered)
+        self.assertNotIn("제거할 관계 내용", rendered)
+        self.assertNotIn("제거할 리스크 내용", rendered)
+
+    def test_hidden_sections_do_not_remove_an_outer_report_wrapper(self):
+        raw = """
+        <div>
+          <section class="report-section">
+            <h2 class="section-heading">핵심 진단</h2>
+            <p>유지할 진단<br class="muted">추가 근거</p>
+          </section>
+          <section class="report-section">
+            <h2 class="section-heading">리스크와 기회</h2>
+            <p>제거할 리스크</p>
+          </section>
+          <section class="report-section">
+            <h2 class="section-heading">실행 계획</h2>
+            <p>유지할 실행 계획</p>
+          </section>
+        </div>
+        """
+
+        rendered = render_management_report_html(parse_management_report(raw))
+
+        self.assertIn("유지할 진단", rendered)
+        self.assertIn("추가 근거", rendered)
+        self.assertIn("유지할 실행 계획", rendered)
+        self.assertNotIn("제거할 리스크", rendered)
+
+    def test_hidden_caption_and_unwrapped_heading_ranges_are_removed(self):
+        raw = """
+        <article>
+          <h2 class="section-heading">핵심 진단</h2>
+          <table><caption>진단 표</caption><tr><td>유지할 핵심 내용</td></tr></table>
+          <h2 class="section-heading">리스크와 기회</h2>
+          <table><caption>삭제 대상</caption><tr><td>제거할 독립 구역</td></tr></table>
+          <h2 class="section-heading">실행 계획</h2>
+          <table><caption>실행 표</caption><tr><td>유지할 실행 내용</td></tr></table>
+          <section class="report-section">
+            <table>
+              <caption>표 간 관계와 비교 가능성</caption>
+              <tr><td>제거할 관계 표</td></tr>
+            </table>
+          </section>
+        </article>
+        """
+
+        rendered = render_management_report_html(parse_management_report(raw))
+
+        self.assertIn("유지할 핵심 내용", rendered)
+        self.assertIn("유지할 실행 내용", rendered)
+        self.assertNotIn("제거할 독립 구역", rendered)
+        self.assertNotIn("제거할 관계 표", rendered)
 
 
 if __name__ == "__main__":

@@ -102,6 +102,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+AI_ANALYSIS_REPORT_VERSION = 3
+
 # ============================================
 # 🧰 OpenAI 에러 포맷팅 유틸 (400/401 원인 확인용)
 # ============================================
@@ -3278,13 +3280,18 @@ def render_dashboard_page():
                         )
                         st.session_state.ai_analysis_report = report
                         st.session_state.ai_analysis_report_meta = {
+                            "version": AI_ANALYSIS_REPORT_VERSION,
                             "source_count": len(selected_tables),
                             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                         }
 
             saved_report = st.session_state.get('ai_analysis_report')
+            report_meta = st.session_state.get('ai_analysis_report_meta', {})
+            if saved_report and report_meta.get('version') != AI_ANALYSIS_REPORT_VERSION:
+                st.session_state.pop('ai_analysis_report', None)
+                st.session_state.pop('ai_analysis_report_meta', None)
+                saved_report = None
             if saved_report:
-                report_meta = st.session_state.get('ai_analysis_report_meta', {})
                 safe_report_time = html.escape(str(report_meta.get('created_at', '')))
                 report_source_count = report_meta.get('source_count', 0)
                 st.markdown(f"""
