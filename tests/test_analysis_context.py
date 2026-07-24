@@ -345,7 +345,11 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
             self.assertIn(concept, system_prompt + user_prompt)
         self.assertIn("순수한 HTML", system_prompt)
         self.assertIn("data-table", system_prompt + user_prompt)
-        self.assertIn("최소 2개의 간결한 표", user_prompt)
+        self.assertIn('"핵심 진단" data-table', user_prompt)
+        self.assertIn('"리스크와 기회" data-table', user_prompt)
+        self.assertIn("모든 주요 섹션", user_prompt)
+        self.assertIn("2열 배치를 사용하지 않는다", user_prompt)
+        self.assertIn("근거가 부족한 섹션의 한계 안내", system_prompt)
         self.assertNotIn("실제 검색한 최신 업계 뉴스", system_prompt + user_prompt)
         self.assertNotIn("linear-gradient", system_prompt + user_prompt)
 
@@ -411,12 +415,11 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         </section>
         <section class="report-section">
           <input type="hidden" value="should-not-break-the-report">
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead><tr><th>지표</th><th>값</th></tr></thead>
-              <tbody><tr><td>매출</td><td>100,000,000원</td></tr></tbody>
-            </table>
-          </div>
+          <table>
+            <thead><tr><th>지표</th><th>값</th></tr></thead>
+            <tbody><tr><td>매출</td><td>100,000,000원</td></tr></tbody>
+          </table>
+          <div class="insight-grid"><div class="insight-card">카드 회귀 방지</div></div>
           <img src="https://example.com/tracker.png">
         </section>
         ```"""
@@ -426,7 +429,15 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
 
         self.assertIn('class="report-hero"', rendered)
         self.assertIn('class="data-table"', rendered)
+        self.assertEqual(rendered.count('class="table-wrap"'), 1)
         self.assertIn("100,000,000원", rendered)
+        self.assertIn("카드 회귀 방지", rendered)
+        self.assertIn("min-width: 960px", rendered)
+        self.assertNotIn('class="insight-grid"', rendered)
+        self.assertNotIn('class="insight-card"', rendered)
+        self.assertNotIn(".kpi-grid", rendered)
+        self.assertNotIn(".action-grid", rendered)
+        self.assertNotIn("grid-template-columns: repeat(2", rendered)
         self.assertNotIn("onclick", rendered.lower())
         self.assertNotIn("<script", rendered.lower())
         self.assertNotIn("<img", rendered.lower())
