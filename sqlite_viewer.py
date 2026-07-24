@@ -2737,7 +2737,7 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_completion_tokens=6000,
+            max_completion_tokens=8000,
         )
         raw_content = response.choices[0].message.content
         report = parse_management_report(raw_content or "")
@@ -3297,7 +3297,7 @@ def render_dashboard_page():
                 """, unsafe_allow_html=True)
 
                 import streamlit.components.v1 as components
-                components.html(saved_report, height=800, scrolling=True)
+                components.html(saved_report, height=1100, scrolling=True)
     
     # [탭 3] 시각화
     with tab_visualization:

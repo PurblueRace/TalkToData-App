@@ -293,6 +293,26 @@ class AnalysisEvidenceTests(unittest.TestCase):
         self.assertNotIn("Alice", context)
         self.assertNotIn("Bob", context)
 
+    def test_pii_inside_a_general_text_column_is_masked(self):
+        saved = _saved_table(
+            "고객 메모 확인",
+            'SELECT "메모" FROM "고객문의"',
+            pd.DataFrame(
+                {
+                    "메모": [
+                        "회신 주소 hong@example.com",
+                        "연락처 010-1234-5678",
+                    ]
+                }
+            ),
+        )
+
+        context = build_analysis_context([saved])
+
+        self.assertNotIn("hong@example.com", context)
+        self.assertNotIn("010-1234-5678", context)
+        self.assertIn("민감정보 마스킹", context)
+
 
 class ManagementAnalysisPromptTests(unittest.TestCase):
     def test_prompts_treat_cell_content_as_data_and_request_decision_support(self):
@@ -323,6 +343,9 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         self.assertRegex(system_prompt + user_prompt, r"(인과|원인).{0,100}(단정|추정)")
         for concept in ("근거", "해석", "리스크", "기회", "실행", "지표"):
             self.assertIn(concept, system_prompt + user_prompt)
+        self.assertIn("순수한 HTML", system_prompt)
+        self.assertIn("data-table", system_prompt + user_prompt)
+        self.assertIn("최소 2개의 간결한 표", user_prompt)
         self.assertNotIn("실제 검색한 최신 업계 뉴스", system_prompt + user_prompt)
         self.assertNotIn("linear-gradient", system_prompt + user_prompt)
 
@@ -344,6 +367,15 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         self.assertIn("executive_summary", report)
         self.assertIn("매출은 증가", _json_text(report))
         self.assertIn("영업이익률", _json_text(report))
+
+    def test_parser_recovers_json_after_a_short_preamble(self):
+        raw = '분석 결과입니다.\n{"executive_summary":["현금흐름 개선"],"actions":[]}'
+
+        report = parse_management_report(raw)
+        rendered = render_management_report_html(report)
+
+        self.assertIn("현금흐름 개선", rendered)
+        self.assertNotIn('{"executive_summary"', rendered)
 
     def test_report_renderer_escapes_model_supplied_html(self):
         report = {
@@ -370,6 +402,58 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         self.assertIn("원가 재협상", rendered)
         self.assertNotIn("<script>", rendered.lower())
         self.assertNotIn("```", rendered)
+
+    def test_rich_html_report_keeps_tables_and_removes_unsafe_markup(self):
+        raw = """```html
+        <section class="report-hero" onclick="alert(1)">
+          <h1 class="report-title">경영지원 종합 진단</h1>
+          <script>alert('x')</script>
+        </section>
+        <section class="report-section">
+          <input type="hidden" value="should-not-break-the-report">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th>지표</th><th>값</th></tr></thead>
+              <tbody><tr><td>매출</td><td>100,000,000원</td></tr></tbody>
+            </table>
+          </div>
+          <img src="https://example.com/tracker.png">
+        </section>
+        ```"""
+
+        report = parse_management_report(raw)
+        rendered = render_management_report_html(report)
+
+        self.assertIn('class="report-hero"', rendered)
+        self.assertIn('class="data-table"', rendered)
+        self.assertIn("100,000,000원", rendered)
+        self.assertNotIn("onclick", rendered.lower())
+        self.assertNotIn("<script", rendered.lower())
+        self.assertNotIn("<img", rendered.lower())
+        self.assertNotIn("tracker.png", rendered)
+
+    def test_nested_json_fallback_does_not_expose_python_brackets(self):
+        report = {
+            "executive_summary": [
+                {
+                    "finding": "매출 증가",
+                    "basis": ["2025년 100", "2026년 120"],
+                }
+            ],
+            "actions": [
+                {
+                    "priority": "높음",
+                    "validation": {"metric": "매출", "timeframe": "다음 달"},
+                }
+            ],
+        }
+
+        rendered = render_management_report_html(report)
+
+        self.assertIn("매출 증가", rendered)
+        self.assertIn("2025년 100", rendered)
+        self.assertNotIn("['", rendered)
+        self.assertNotIn("{'", rendered)
 
 
 if __name__ == "__main__":
