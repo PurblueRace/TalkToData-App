@@ -17,8 +17,11 @@ import secrets
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from app_access import PUBLIC_WORKSPACE_USERNAME, parse_flag
+from query_result import is_effectively_empty_result
+from sql_prompt import build_sql_system_prompt, build_sql_user_prompt
 from visualization_utils import (
     format_compact_value,
     is_composition_question,
@@ -67,7 +70,7 @@ try:
         load_config, save_config, auto_detect_columns,
         update_required_columns, get_required_columns,
         get_managed_tables, add_managed_table, update_managed_tables,
-        clear_managed_tables, get_column_keywords
+        clear_managed_tables
     )
 except ImportError:
     st.error("⚠️ config_manager.py를 찾을 수 없습니다!")
@@ -80,7 +83,6 @@ except ImportError:
     add_managed_table = None
     update_managed_tables = None
     clear_managed_tables = None
-    get_column_keywords = None
 
 # OpenAI API 임포트
 from openai import OpenAI
@@ -165,7 +167,7 @@ if os.getenv("OPENAI_BASE_URL") and os.getenv("OPENAI_BASE_URL").strip():
 
 # ============================================
 # 🤖 OpenAI 모델 (프로젝트 전역 기본값)
-# - 요구사항: 파일 내 사용하는 AI 모델을 GPT 5.2로 통일
+# - 기본 모델: 비용 효율적인 GPT-5.6 Luna
 # - 필요 시 Streamlit Secrets / 환경변수로 오버라이드 가능: OPENAI_MODEL
 # ============================================
 OPENAI_MODEL = None
@@ -176,7 +178,7 @@ except Exception:
     OPENAI_MODEL = None
 
 if not OPENAI_MODEL:
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 
 # OpenAI 클라이언트 초기화
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -185,410 +187,8 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 SCRIPT_DIR = Path(__file__).parent.absolute()
 DB_PATH = str(SCRIPT_DIR / 'accounting.db')
 
-# System Prompt V2 (토큰 최적화 + 관계도 포함 + 원가/비용 계산 로직 정밀화)
-
-SYSTEM_PROMPT_V2 = """
-
-[역할]
-
-너는 SQLite 데이터베이스용 SQL 쿼리 생성 전문가다.
-
-한국어 자연어 질문을 받아 이 회계 스키마에 맞는 SQL 쿼리를 생성한다.
-
-쿼리는 사람이 바로 실행할 수 있는 형태여야 하며, 불필요한 설명/백틱은 출력하지 않는다.
-
-
-
-[테이블 / 관계]
-
-- 회계전표: 모든 거래가 기록되는 핵심 테이블
-
-  - 계정마스터      : ON 회계전표."계정코드"      = 계정마스터."계정코드"
-
-  - 거래처마스터    : ON 회계전표."거래처코드"    = 거래처마스터."거래처코드"
-
-  - 부서마스터      : ON 회계전표."부서코드"      = 부서마스터."부서코드"
-
-  - 프로젝트마스터 : ON 회계전표."프로젝트코드" = 프로젝트마스터."프로젝트코드"
-
-  - 원재료마스터    : ON 회계전표."원재료코드"    = 원재료마스터."원재료코드"
-
-  - 재공품마스터    : ON 회계전표."재공품코드"    = 재공품마스터."재공품코드"
-
-  - 제품마스터      : ON 회계전표."제품코드"      = 제품마스터."제품코드"
-
-- BOM마스터        : 제품마스터."제품코드"      = BOM마스터."제품코드"
-
-- BOM마스터        : 원재료마스터."원재료코드" = BOM마스터."원재료코드"
-
-- 재공품마스터     : 제품마스터."제품코드"      = 재공품마스터."제품코드"
-
-
-
-[핵심 규칙]
-
-1. 컬럼명은 항상 큰따옴표로 감싼다. 예) "거래일자", "대변금액".
-
-2. 하나의 질문에 대해 하나의 SQL 쿼리만 생성하되, CTE(WITH 절)를 적극 사용하여 가독성을 높인다.
-
-3. SELECT 절에는 핵심 컬럼만 넣되, 집계/지표가 필요한 경우 적절한 계산 컬럼을 포함한다.
-
-4. 매출:
-
-   - 정의: 회계전표에서 "계정명"에 '매출'이 포함된 대변금액의 합계.
-
-   - 쿼리: SELECT ..., SUM(j."대변금액") AS "매출" FROM 회계전표 j WHERE j."계정명" LIKE '%매출%'
-
-
-
-5. 🔥 [비용/예산사용액 계산 절대 규칙] (가장 중요):
-
-   - 단순히 `회계전표`의 `차변금액`을 전부 더하면 안 된다. (자산 증가, 부채 감소도 차변에 오기 때문)
-
-   - **반드시 `계정마스터` 테이블과 JOIN** 하여, **`대분류`가 '비용'** (또는 제조원가, 판관비 등 비용 성격)인 계정만 합산해야 한다.
-
-   - 조건 예시: `WHERE a."대분류" LIKE '%비용%' OR a."대분류" IN ('매출원가', '판매비와관리비', '제조원가', '영업외비용')`
-
-   
-
-6. 기간 필터:
-
-   - 올해:     strftime('%Y', j."거래일자") = strftime('%Y','now')
-
-   - 특정 월: strftime('%Y-%m', j."거래일자") = '2025-01' 과 같이 사용.
-
-7. ORDER BY / LIMIT:
-
-   - LIMIT 사용은 피하고, ORDER BY DESC와 필요한 경우 상위 N 개는 서브쿼리 또는 윈도우 함수를 사용한다.
-
-
-
-8. ★ 코드-명칭 동반 출력 규칙 ★:
-
-   - SELECT 절에 식별자(코드)가 포함될 경우, 반드시 해당 마스터 테이블을 JOIN하여 **'명칭' 컬럼을 바로 옆에 포함**시켜야 한다.
-
-   - 예시: `SELECT j."프로젝트코드", p."프로젝트명", ...`
-
-
-
-[🔥 원가 / 마진 계산 규칙]
-
-1. 제품 단위 원가는 BOM마스터와 원재료마스터를 통해 계산한다.
-
-2. 제품별 매출과 판매수량은 회계전표에서 집계한다.
-
-3. 🚨 **치명적 오류 방지**:
-
-   - 절대 `매출액 * 단위원가`를 계산하지 마시오.
-
-   - 반드시 **`판매수량 * 단위원가`** 공식을 사용하여 매출원가를 구해야 한다.
-
-
-
-[응답 형식]
-
-- 항상 실행 가능한 순수 SQL 쿼리만 한 번 출력한다.
-
-"""
-
-POSTGRES_DIALECT_OVERRIDE = """
-
-[최우선 데이터베이스 규칙 - PostgreSQL]
-
-- 현재 데이터베이스는 SQLite가 아니라 PostgreSQL이다. 앞의 SQLite 문법 예시는 무시한다.
-- 모든 테이블명과 컬럼명은 정확한 대소문자를 보존하도록 반드시 쌍따옴표로 감싼다.
-- 연도는 EXTRACT(YEAR FROM "거래일자"), 월은 TO_CHAR("거래일자", 'YYYY-MM'),
-  월 시작일은 DATE_TRUNC('month', "거래일자")를 사용한다.
-- 현재 날짜는 CURRENT_DATE를 사용한다.
-- strftime(), julianday(), date('now', ...), PRAGMA는 절대 사용하지 않는다.
-- SELECT 또는 읽기 전용 WITH 쿼리 한 개만 생성한다. 데이터 변경 SQL은 절대 생성하지 않는다.
-- 집계하지 않은 SELECT 컬럼은 모두 GROUP BY에 포함한다.
-"""
-
-
 def get_sql_system_prompt() -> str:
-    if is_remote_database():
-        postgres_prompt = SYSTEM_PROMPT_V2.replace(
-            "너는 SQLite 데이터베이스용 SQL 쿼리 생성 전문가다.",
-            "너는 PostgreSQL 데이터베이스용 SQL 쿼리 생성 전문가다.",
-        )
-        postgres_prompt = postgres_prompt.replace(
-            "strftime('%Y', j.\"거래일자\") = strftime('%Y','now')",
-            "EXTRACT(YEAR FROM j.\"거래일자\") = EXTRACT(YEAR FROM CURRENT_DATE)",
-        )
-        postgres_prompt = postgres_prompt.replace(
-            "strftime('%Y-%m', j.\"거래일자\") = '2025-01'",
-            "TO_CHAR(j.\"거래일자\", 'YYYY-MM') = '2025-01'",
-        )
-        return postgres_prompt + POSTGRES_DIALECT_OVERRIDE
-    return SYSTEM_PROMPT_V2
-
-# Few-shot 예시 (비용 집계 시 계정 분류 필터링 적용)
-
-FEW_SHOT_EXAMPLES = """
-[Few-shot 예제]
-
-Q: 프로젝트별 예산 대비 사용액과 초과 여부를 보여줘
-A: WITH ProjectCost AS (
-  SELECT 
-    j."프로젝트코드",
-    SUM(j."차변금액") AS "사용금액"
-  FROM 회계전표 j
-  JOIN 계정마스터 a ON j."계정코드" = a."계정코드"
-  WHERE a."대분류" LIKE '%비용%' OR a."대분류" IN ('매출원가', '판매비와관리비', '제조원가') -- 중요: 비용 계정만 필터링
-  GROUP BY j."프로젝트코드"
-)
-SELECT 
-  p."프로젝트코드",
-  p."프로젝트명",
-  COALESCE(c."사용금액", 0) AS "사용금액",
-  p."예산",
-  CASE 
-    WHEN COALESCE(c."사용금액", 0) > p."예산" THEN '초과'
-    ELSE '이내'
-  END AS "초과여부",
-  ROUND(COALESCE(c."사용금액", 0) * 100.0 / NULLIF(p."예산", 0), 2) AS "예산사용율"
-FROM 프로젝트마스터 p
-LEFT JOIN ProjectCost c ON p."프로젝트코드" = c."프로젝트코드"
-ORDER BY "예산사용율" DESC
-
-Q: 부서별 비용 합계
-A: SELECT 
-  d."부서코드",
-  d."부서명", 
-  COUNT(DISTINCT j."전표번호") AS "전표수",
-  SUM(j."차변금액") AS "비용"
-FROM 회계전표 j
-LEFT JOIN 부서마스터 d ON j."부서코드" = d."부서코드"
-JOIN 계정마스터 a ON j."계정코드" = a."계정코드"
-WHERE a."대분류" LIKE '%비용%' -- 중요: 자산/부채 제외
-GROUP BY d."부서코드", d."부서명"
-ORDER BY "비용" DESC
-
-Q: 제품별 단위원가를 보여줘
-A: SELECT 
-  p."제품코드", 
-  p."제품명", 
-  SUM(b."수량" * m."단가") AS "단위원가"
-FROM "BOM마스터" b
-LEFT JOIN 제품마스터 p ON b."제품코드" = p."제품코드"
-LEFT JOIN 원재료마스터 m ON b."원재료코드" = m."원재료코드"
-GROUP BY p."제품코드", p."제품명"
-
-Q: 제품별 수량, 매출, 매출원가, 마진율 정리해줘
-A: WITH Sales AS (
-  SELECT 
-    j."제품코드",
-    SUM(j."수량") AS "판매수량",
-    SUM(j."대변금액") AS "매출"
-  FROM 회계전표 j
-  WHERE j."계정명" LIKE '%매출%'
-  GROUP BY j."제품코드"
-),
-Cost AS (
-  SELECT 
-    p."제품코드",
-    SUM(b."수량" * m."단가") AS "단위원가"
-  FROM "BOM마스터" b
-  LEFT JOIN 제품마스터 p ON b."제품코드" = p."제품코드"
-  LEFT JOIN 원재료마스터 m ON b."원재료코드" = m."원재료코드"
-  GROUP BY p."제품코드"
-)
-SELECT 
-  s."제품코드",
-  p."제품명",
-  s."판매수량",
-  s."매출",
-  (s."판매수량" * c."단위원가") AS "매출원가",
-  (s."매출" - (s."판매수량" * c."단위원가")) AS "마진",
-  ROUND((s."매출" - (s."판매수량" * c."단위원가")) * 100.0 / NULLIF(s."매출", 0), 2) AS "마진율"
-FROM Sales s
-LEFT JOIN Cost c ON s."제품코드" = c."제품코드"
-LEFT JOIN 제품마스터 p ON s."제품코드" = p."제품코드"
-ORDER BY "매출" DESC
-"""
-
-# ============================================
-# 🔥 궁극의 퓨샷 저장소 (토큰 최대화 및 고급 패턴 추가)
-# ============================================
-
-FEW_SHOT_EXAMPLES_ULTIMATE = """[Few-shot 예시 - 궁극의 확장판]
-
-# ============================================
-# 카테고리 1: 기본 집계 (SUM, COUNT, AVG, MAX, MIN) - (기존 유지)
-# ============================================
-
-Q: 전체 매출 합계
-A: SELECT SUM("대변금액") AS "매출합계" FROM 회계전표 WHERE "계정명" LIKE '%매출%'
-
-Q: 전체 비용 합계
-A: SELECT SUM("차변금액") AS "비용합계" FROM 회계전표
-
-Q: 계정과목은 몇 개인가요?
-A: SELECT COUNT(DISTINCT "계정코드") AS "계정수" FROM 회계전표
-
-# ============================================
-# 카테고리 2: 그룹핑 & JOIN (거래처별, 부서별, 프로젝트별) - (기존 유지)
-# ============================================
-
-Q: 거래처별 매출 합계
-A: SELECT g."거래처코드", g."거래처명", SUM(j."대변금액") AS "매출합계" FROM 회계전표 j LEFT JOIN 거래처마스터 g ON j."거래처코드"=g."거래처코드" WHERE j."계정명" LIKE '%매출%' GROUP BY g."거래처코드", g."거래처명" ORDER BY "매출합계" DESC
-
-Q: 프로젝트별 매출
-A: SELECT p."프로젝트코드", p."프로젝트명", SUM(j."대변금액") AS "매출" FROM 회계전표 j LEFT JOIN 프로젝트마스터 p ON j."프로젝트코드"=p."프로젝트코드" WHERE j."계정명" LIKE '%매출%' GROUP BY p."프로젝트코드", p."프로젝트명" ORDER BY "매출" DESC
-
-# ============================================
-# 카테고리 3: 시간 기반 분석 (일/월/년별, 기간 비교) - (고급 날짜 함수 강화)
-# ============================================
-
-Q: 올해 월별 매출 추이
-A: SELECT strftime('%Y-%m',"거래일자") AS "월", SUM("대변금액") AS "매출" FROM 회계전표 WHERE "계정명" LIKE '%매출%' AND strftime('%Y',"거래일자")=strftime('%Y','now') GROUP BY strftime('%Y-%m',"거래일자") ORDER BY "월"
-
-Q: 분기별 매출 (CASE WHEN 사용)
-A: SELECT CASE WHEN CAST(strftime('%m',"거래일자") AS INTEGER) BETWEEN 1 AND 3 THEN '1분기' WHEN CAST(strftime('%m',"거래일자") AS INTEGER) BETWEEN 4 AND 6 THEN '2분기' WHEN CAST(strftime('%m',"거래일자") AS INTEGER) BETWEEN 7 AND 9 THEN '3분기' ELSE '4분기' END AS "분기", SUM("대변금액") AS "매출" FROM 회계전표 WHERE "계정명" LIKE '%매출%' AND strftime('%Y',"거래일자")=strftime('%Y','now') GROUP BY "분기" ORDER BY "분기"
-
-Q: 작년 대비 올해 매출 증가율 (WITH 절 사용)
-A: WITH CurrentY AS (SELECT SUM("대변금액") AS C_SALES FROM 회계전표 WHERE "계정명" LIKE '%매출%' AND strftime('%Y',"거래일자")=strftime('%Y','now')), PreviousY AS (SELECT SUM("대변금액") AS P_SALES FROM 회계전표 WHERE "계정명" LIKE '%매출%' AND strftime('%Y',"거래일자")=strftime('%Y',date('now','-1 year'))) SELECT ROUND((C.C_SALES - P.P_SALES) * 100.0 / NULLIF(P.P_SALES, 0), 2) AS "증가율(%)" FROM CurrentY C JOIN PreviousY P
-
-# ============================================
-# 카테고리 4: 비율/비중 계산 - (기존 유지)
-# ============================================
-
-Q: 프로젝트별 매출 비중
-A: SELECT p."프로젝트코드", p."프로젝트명", SUM(j."대변금액") AS "매출", ROUND(SUM(j."대변금액")*100.0/(SELECT SUM("대변금액") FROM 회계전표 WHERE "계정명" LIKE '%매출%'),2) AS "비중" FROM 회계전표 j LEFT JOIN 프로젝트마스터 p ON j."프로젝트코드"=p."프로젝트코드" WHERE j."계정명" LIKE '%매출%' GROUP BY p."프로젝트코드", p."프로젝트명" ORDER BY "매출" DESC
-
-# ============================================
-# 카테고리 5: 순위/상위N개 (ORDER BY) - (기존 유지)
-# ============================================
-
-Q: 매출 상위 5개 거래처
-A: SELECT g."거래처명", SUM(j."대변금액") AS "매출" FROM 회계전표 j LEFT JOIN 거래처마스터 g ON j."거래처코드"=g."거래처코드" WHERE j."계정명" LIKE '%매출%' GROUP BY g."거래처명" ORDER BY "매출" DESC LIMIT 5
-
-# ============================================
-# 카테고리 6: 복잡한 조건 (CASE WHEN, 다중 WHERE) - (기존 유지)
-# ============================================
-
-Q: 부서별 예산 초과 여부
-A: SELECT d."부서명", d."예산", SUM(j."차변금액") AS "실제비용", CASE WHEN SUM(j."차변금액")>d."예산" THEN '초과' ELSE '정상' END AS "상태" FROM 회계전표 j LEFT JOIN 부서마스터 d ON j."부서코드"=d."부서코드" GROUP BY d."부서명", d."예산"
-
-# ============================================
-# 카테고리 7: 서브쿼리 (상위N%, 평균 초과 등) - (기존 유지)
-# ============================================
-
-Q: 평균 매출 이상 거래처
-A: SELECT g."거래처명", SUM(j."대변금액") AS "매출" FROM 회계전표 j LEFT JOIN 거래처마스터 g ON j."거래처코드"=g."거래처코드" WHERE j."계정명" LIKE '%매출%' GROUP BY g."거래처명" HAVING SUM(j."대변금액")>=(SELECT AVG("총매출") FROM (SELECT SUM("대변금액") AS "총매출" FROM 회계전표 WHERE "계정명" LIKE '%매출%' GROUP BY "거래처코드")) ORDER BY "매출" DESC
-
-# ============================================
-# 카테고리 8: 재고/생산 관리 (원재료, 재공품, 제품) - (기존 유지)
-# ============================================
-
-Q: 원재료 재고 부족 목록
-A: SELECT "원재료코드", "원재료명", "현재재고", "안전재고" FROM 원재료마스터 WHERE "현재재고"<"안전재고" AND "사용여부"='Y'
-
-# ============================================
-# 카테고리 9: BOM/원가 계산 - (복잡한 논리 명시 강화)
-# ============================================
-
-Q: 제품별 BOM 원재료 원가 (3개 테이블 조인)
-A: SELECT p."제품코드", p."제품명", SUM(b."수량"*m."단가") AS "원재료원가" FROM BOM마스터 b LEFT JOIN 제품마스터 p ON b."제품코드"=p."제품코드" LEFT JOIN 원재료마스터 m ON b."원재료코드"=m."원재료코드" GROUP BY p."제품코드", p."제품명"
-
-Q: 원재료 구매액의 공급업체별 비중 (5% 초과만)
-A: WITH SupplierCost AS (SELECT m."공급업체코드", SUM(m."단가"*m."현재재고") AS "총구매액" FROM 원재료마스터 m GROUP BY m."공급업체코드") SELECT g."거래처명", S."총구매액", ROUND(S."총구매액" * 100.0 / (SELECT SUM("총구매액") FROM SupplierCost), 2) AS "비중" FROM SupplierCost S LEFT JOIN 거래처마스터 g ON S."공급업체코드"=g."거래처코드" WHERE "비중">5.0 ORDER BY "비중" DESC
-
-# ============================================
-# 카테고리 10: 재무제표 유형 (PL, BS) - (기존 유지)
-# ============================================
-
-Q: 손익계산서 - 영업이익
-A: SELECT (SELECT SUM("대변금액") FROM 회계전표 WHERE "계정명" LIKE '%매출%')-(SELECT SUM("차변금액") FROM 회계전표 WHERE "계정명" LIKE '%매출원가%' OR "계정명" LIKE '%판매관리비%') AS "영업이익"
-
-# ============================================
-# 카테고리 11: 다중 테이블 JOIN (3개 이상) - (기존 유지)
-# ============================================
-
-Q: 프로젝트별 부서별 매출 (3-way JOIN)
-A: SELECT p."프로젝트명", d."부서명", SUM(j."대변금액") AS "매출" FROM 회계전표 j LEFT JOIN 프로젝트마스터 p ON j."프로젝트코드"=p."프로젝트코드" LEFT JOIN 부서마스터 d ON j."부서코드"=d."부서코드" WHERE j."계정명" LIKE '%매출%' GROUP BY p."프로젝트명", d."부서명" ORDER BY "매출" DESC
-
-# ============================================
-# 카테고리 12: NULL 처리 (COALESCE, IFNULL) - (기존 유지)
-# ============================================
-
-Q: NULL 거래처는 '미지정'으로 표시
-A: SELECT COALESCE(g."거래처명",'미지정') AS "거래처명", SUM(j."대변금액") AS "매출" FROM 회계전표 j LEFT JOIN 거래처마스터 g ON j."거래처코드"=g."거래처코드" WHERE j."계정명" LIKE '%매출%' GROUP BY g."거래처명" ORDER BY "매출" DESC
-
-# ============================================
-# 카테고리 13: 문자열 처리 (LIKE, SUBSTR, LENGTH) - (기존 유지)
-# ============================================
-
-Q: 계정명에 '급여' 포함된 거래
-A: SELECT "계정명", SUM("차변금액") AS "금액" FROM 회계전표 WHERE "계정명" LIKE '%급여%' GROUP BY "계정명"
-
-# ============================================
-# 카테고리 14: 날짜 계산 (고급 날짜 함수 추가)
-# ============================================
-
-Q: 지난 분기의 시작일과 종료일 (날짜 산술)
-A: SELECT date('now', 'start of quarter', '-3 month') AS "지난분기시작일", date('now', 'start of quarter', '-1 day') AS "지난분기종료일"
-
-Q: 이번 주 월요일 날짜 계산
-A: SELECT date('now', 'weekday 1') AS "이번주월요일" -- SQLite의 'weekday N'은 0(일요일)부터 시작함. 1은 월요일
-
-Q: 6개월 이상 거래 없는 거래처 (날짜 차이)
-A: SELECT g."거래처명", MAX(j."거래일자") AS "최종거래일" FROM 회계전표 j LEFT JOIN 거래처마스터 g ON j."거래처코드"=g."거래처코드" GROUP BY g."거래처명" HAVING julianday('now')-julianday(MAX(j."거래일자"))>180
-
-# ============================================
-# 카테고리 15: 특수 분석 패턴 (기존 유지)
-# ============================================
-
-Q: 거래처 충성도 (거래 지속 개월수)
-A: SELECT g."거래처명", COUNT(DISTINCT strftime('%Y-%m',j."거래일자")) AS "거래개월수" FROM 회계전표 j LEFT JOIN 거래처마스터 g ON j."거래처코드"=g."거래처코드" GROUP BY g."거래처명" ORDER BY "거래개월수" DESC
-
-# ============================================
-# ⭐️ 카테고리 16: 창 함수 (Window Functions) - (새로운 패턴 추가)
-# ============================================
-
-Q: 월별 매출액과 누적 매출액을 함께 계산 (SUM OVER)
-A: SELECT strftime('%Y-%m', "거래일자") AS "월", SUM("대변금액") AS "월별매출", SUM(SUM("대변금액")) OVER (ORDER BY strftime('%Y-%m', "거래일자")) AS "누적매출액" FROM 회계전표 WHERE "계정명" LIKE '%매출%' AND strftime('%Y', "거래일자") = strftime('%Y', 'now') GROUP BY "월" ORDER BY "월"
-
-Q: 부서별 비용 순위를 함께 표시 (RANK OVER)
-A: SELECT d."부서명", SUM(j."차변금액") AS "총비용", RANK() OVER (ORDER BY SUM(j."차변금액") DESC) AS "비용순위" FROM 회계전표 j LEFT JOIN 부서마스터 d ON j."부서코드"=d."부서코드" GROUP BY d."부서명" ORDER BY "비용순위"
-
-Q: 거래처별 매출 기여도 상위 3개 (WINDOW FRAME + PARTITION BY)
-A: SELECT "거래처명", "월", "월별매출", RANK() OVER (PARTITION BY "월" ORDER BY "월별매출" DESC) AS "월별순위" FROM (SELECT g."거래처명", strftime('%Y-%m', j."거래일자") AS "월", SUM(j."대변금액") AS "월별매출" FROM 회계전표 j LEFT JOIN 거래처마스터 g ON j."거래처코드"=g."거래처코드" WHERE j."계정명" LIKE '%매출%' GROUP BY g."거래처명", "월") WHERE "월별순위"<=3 ORDER BY "월", "월별순위"
-
-Q: 계정별 월별 이동 평균 비용 (AVG OVER)
-A: SELECT strftime('%Y-%m', "거래일자") AS "월", "계정명", SUM("차변금액") AS "월별비용", AVG(SUM("차변금액")) OVER (PARTITION BY "계정명" ORDER BY strftime('%Y-%m', "거래일자") ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS "3개월이동평균" FROM 회계전표 GROUP BY "월", "계정명" ORDER BY "계정명", "월"
-
-# ============================================
-# 카테고리 17: 복잡한 논리 조합 (CTE 사용 명시) - (고급 논리)
-# ============================================
-
-Q: 매출 상위 10%의 거래처와 하위 10% 거래처의 평균 매출액 비교
-A: WITH RankedClients AS (SELECT "거래처코드", SUM("대변금액") AS TotalSales, NTILE(10) OVER (ORDER BY SUM("대변금액") DESC) AS SalesTile FROM 회계전표 WHERE "계정명" LIKE '%매출%' GROUP BY "거래처코드") SELECT '상위 10%' AS "구분", AVG(TotalSales) AS "평균매출" FROM RankedClients WHERE SalesTile = 1 UNION ALL SELECT '하위 10%' AS "구분", AVG(TotalSales) AS "평균매출" FROM RankedClients WHERE SalesTile = 10;
-
-Q: 전표번호의 차변/대변 불일치와 금액 차이 (복합 HAVING)
-A: SELECT "전표번호", SUM("차변금액") AS "총차변", SUM("대변금액") AS "총대변", ABS(SUM("차변금액") - SUM("대변금액")) AS "차액" FROM 회계전표 GROUP BY "전표번호" HAVING "차액" > 0.01 AND SUM("차변금액") IS NOT NULL AND SUM("대변금액") IS NOT NULL ORDER BY "차액" DESC
-
-# ============================================
-# 카테고리 18: 마스터 데이터 기준 필터링 (마스터 제약 조건)
-# ============================================
-
-Q: 사용여부가 'Y'인 원재료만 필터링한 재고 현황
-A: SELECT "원재료명", "현재재고", "안전재고" FROM 원재료마스터 WHERE "사용여부" = 'Y' ORDER BY "현재재고" DESC
-
-Q: 거래처 마스터의 '지역'이 '서울'인 거래처의 총 매출
-A: SELECT g."거래처명", SUM(j."대변금액") AS "매출" FROM 회계전표 j LEFT JOIN 거래처마스터 g ON j."거래처코드"=g."거래처코드" WHERE j."계정명" LIKE '%매출%' AND g."지역" = '서울' GROUP BY g."거래처명" ORDER BY "매출" DESC
-
-"""
-
-# System Prompt 정의 (기본 프롬프트 - 하위 호환성용, 토큰 절약을 위해 최소화)
-SYSTEM_PROMPT = """너는 한국어 회계 전문 SQLite 쿼리 생성기다. 사용자 질문을 정확한 SQL로 변환해라. 오직 실행 가능한 SQL 쿼리만 출력하고 백틱, 설명, 주석은 절대 포함하지 마라. LIMIT 절을 절대 사용하지 마라. 한국어 컬럼명은 큰따옴표로 감싸라."""
-
-# ============================================
-# 🔥 최종 2500토큰 - 최대 5개 칼럼 우선순위 버전 (한화면 딱!)
-# ============================================
-
-# 하드코딩된 스키마 설명 제거됨 - JSON 기반으로만 동작
+    return build_sql_system_prompt(postgres=is_remote_database())
 
 # 페이지 설정
 st.set_page_config(
@@ -1865,46 +1465,40 @@ def delete_managed_tables() -> int:
 # analyze_question, build_cot_prompt, generate_final_user_prompt 함수 제거됨 (CoT 설명 제거)
 
 
-def generate_sql_5col(question: str) -> str:
-    """JSON 기반 SQL 생성 (하드코딩 제거)"""
+def generate_sql_from_schema(question: str) -> str:
+    """실제 DB 설계도와 회계 의미 규칙을 기반으로 SQL을 생성한다."""
     try:
-        config = load_config()
-        if config is None:
-            st.error("❌ config.json을 로드할 수 없습니다.")
-            return None
-        
+        live_schema = get_db_schema()
+        config = load_config() or {}
         managed_tables = get_managed_tables(config) if get_managed_tables else []
-        if not managed_tables:
-            managed_tables = get_all_tables()
-        
-        required_columns_dict = {}
-        for table_name in managed_tables:
-            required_cols = get_required_columns(table_name, config) if get_required_columns else []
-            if required_cols:
-                required_columns_dict[table_name] = required_cols
-        
-        column_keywords = get_column_keywords(config) if get_column_keywords else {}
-        table_aliases = config.get("table_aliases", {}) if config else {}
-        
-        # ★★★ 수정: JSON 형식으로 전달 ★★★
-        schema_json = json.dumps({
-            "required_columns": required_columns_dict,
-            "table_aliases": table_aliases,
-            "column_keywords": column_keywords,
-            "managed_tables": managed_tables
-        }, ensure_ascii=False, indent=2)
-        
-        # ★★★ 수정: Few-shot 예시 추가 (전역 상수 사용) ★★★
-        user_prompt = f"""[스키마]
-{schema_json}
+        if managed_tables:
+            managed_schema = {
+                table_name: live_schema[table_name]
+                for table_name in managed_tables
+                if table_name in live_schema
+            }
+            prompt_schema = managed_schema or live_schema
+        else:
+            prompt_schema = live_schema
 
-{FEW_SHOT_EXAMPLES}
+        data_context = {
+            "오늘(Asia/Seoul)": datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+        }
+        if "회계전표" in prompt_schema and "거래일자" in prompt_schema["회계전표"]:
+            date_range = read_sql_query(
+                'SELECT MIN("거래일자") AS "시작일", MAX("거래일자") AS "종료일" '
+                'FROM "회계전표"'
+            )
+            if not date_range.empty:
+                data_context["데이터시작일"] = str(date_range.iloc[0]["시작일"])
+                data_context["데이터종료일"] = str(date_range.iloc[0]["종료일"])
 
-[질문]
-
-{question}
-
-SQL:"""
+        user_prompt = build_sql_user_prompt(
+            question,
+            prompt_schema,
+            postgres=is_remote_database(),
+            data_context=data_context,
+        )
 
         # ★★★ 디버그 로깅 추가 ★★★
         print(f"[DEBUG] User prompt length: {len(user_prompt)}")
@@ -1915,10 +1509,16 @@ SQL:"""
                 {"role": "system", "content": get_sql_system_prompt()},
                 {"role": "user", "content": user_prompt}
             ],
-            max_completion_tokens=500
+            reasoning_effort="low",
+            max_completion_tokens=1200
         )
-        
-        sql = response.choices[0].message.content.strip()
+
+        raw_content = response.choices[0].message.content
+        if not raw_content or not raw_content.strip():
+            finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
+            print(f"[ERROR] Empty SQL response (finish_reason={finish_reason})")
+            return None
+        sql = raw_content.strip()
         
         # ★★★ 디버그: 원본 응답 출력 ★★★
         print(f"[DEBUG] Raw LLM response: {sql[:200]}...")
@@ -1944,31 +1544,9 @@ SQL:"""
 
 
 def generate_sql_complete(user_question: str) -> str:
-    """
-    STEP 1~4 통합: 완전한 프롬프트 엔지니어링
-    최대 5개 칼럼 버전 사용 (토큰 절약)
-    """
+    """현재 DB 설계도를 사용해 자연어 질문을 SQL로 변환한다."""
     try:
-        # 🔥 최대 5개 칼럼 버전 사용 (2500토큰 최적화)
-        return generate_sql_5col(user_question)
-        
-        # 기존 버전 (주석 처리 - 필요시 활성화)
-        # user_prompt = generate_final_user_prompt(user_question)
-        # response = client.chat.completions.create(
-        #     model=OPENAI_MODEL,
-        #     messages=[
-        #         {"role": "system", "content": SYSTEM_PROMPT_V2},
-        #         {"role": "user", "content": user_prompt}
-        #     ],
-        #     temperature=0.05,
-        #     max_tokens=2000
-        # )
-        # sql = response.choices[0].message.content.strip()
-        # sql = re.sub(r'^```sql\s*', '', sql, flags=re.IGNORECASE)
-        # sql = re.sub(r'^```\s*', '', sql)
-        # sql = re.sub(r'\s*```$', '', sql)
-        # sql = sql.strip()
-        # return sql
+        return generate_sql_from_schema(user_question)
     except Exception as e:
         st.error(f"SQL 생성 오류: {_format_openai_exception(e)}")
         return None
@@ -2022,50 +1600,12 @@ def format_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df_formatted
 
 
-def execute_sql_query(sql_query: str) -> pd.DataFrame:
-    """SQL 쿼리를 실행하고 DataFrame 반환"""
+def execute_sql_query(sql_query: str) -> Tuple[pd.DataFrame, Optional[str]]:
+    """SQL 쿼리 결과와, 실패한 경우 사용자가 확인할 오류 문구를 반환한다."""
     try:
-        return db_read_dataframe(sql_query, DB_PATH)
+        return db_read_dataframe(sql_query, DB_PATH), None
     except Exception as e:
-        st.error(f"쿼리 실행 오류: {str(e)}")
-        return pd.DataFrame()
-
-
-def get_schema_context() -> str:
-    """config.json의 required_columns, column_keywords, managed_tables만 사용하여 스키마 정보 반환"""
-    try:
-        config = load_config()
-        
-        # managed_tables 가져오기
-        managed_tables = get_managed_tables(config) if get_managed_tables else []
-        if not managed_tables:
-            return "관리되는 테이블이 없습니다. config.json의 managed_tables를 확인하세요.\n\n"
-        
-        schema_parts = []
-        
-        # 각 관리 테이블에 대해 required_columns만 사용
-        for table_name in managed_tables:
-            required_cols = get_required_columns(table_name, config) if get_required_columns else []
-            if not required_cols:
-                continue
-            
-            schema_parts.append(f"테이블: {table_name}")
-            schema_parts.append(f"필수 컬럼: {', '.join([f'\"{col}\"' for col in required_cols])}")
-            schema_parts.append("")
-        
-        # column_keywords 정보 추가
-        column_keywords = get_column_keywords(config) if get_column_keywords else {}
-        if column_keywords:
-            schema_parts.append("컬럼 키워드 매핑:")
-            for keyword_type, keywords in column_keywords.items():
-                schema_parts.append(f"  {keyword_type}: {', '.join(keywords)}")
-            schema_parts.append("")
-        
-        return "\n".join(schema_parts) if schema_parts else "스키마 정보가 없습니다.\n\n"
-    except Exception as e:
-        return f"스키마 정보 오류: {e}\n\n"
-
-
+        return pd.DataFrame(), str(e)
 
 
 def generate_insight_report(df: pd.DataFrame, user_question: str, sql_query: str) -> str:
@@ -3809,6 +3349,7 @@ def render_dashboard_page():
     current_sql_query = ''
     current_df = pd.DataFrame()
     current_question = ''
+    current_sql_error = ''
     
     if st.session_state.messages:
         for msg in st.session_state.messages:
@@ -3816,54 +3357,60 @@ def render_dashboard_page():
                 current_sql_query = msg.get('sql', '')
                 current_df = msg.get('result_df', pd.DataFrame())
                 current_question = msg.get('user_question', '')
+                current_sql_error = msg.get('sql_error', '')
                 break
-    
+
     # [탭 1] SQL & 데이터
     with tab1:
-        if current_sql_query and not current_df.empty:
-            st.markdown("### 상세 데이터")
-            
-            # 숫자 포맷팅 (기존 로직 유지)
-            numeric_cols = current_df.select_dtypes(include=['number']).columns
-            exclude_keywords = ['id', 'code', '코드', '번호', 'no', 'year', 'month', '일자']
-            format_dict = {}
-            for col in numeric_cols:
-                if any(k in col.lower() for k in exclude_keywords): continue
-                is_integer_like = False
-                if pd.api.types.is_integer_dtype(current_df[col]): is_integer_like = True
-                elif pd.api.types.is_float_dtype(current_df[col]):
-                    valid_vals = current_df[col].dropna()
-                    if not valid_vals.empty and valid_vals.apply(lambda x: x.is_integer()).all(): is_integer_like = True
-                format_dict[col] = "{:,.0f}" if is_integer_like else "{:,.2f}"
+        if current_sql_query:
+            if current_sql_error:
+                st.error(f"쿼리를 실행하지 못했습니다: {current_sql_error}")
+                st.caption("아래 SQL의 테이블·컬럼명, 조건식, 날짜 함수를 확인해 주세요.")
+            elif is_effectively_empty_result(current_df):
+                st.info("쿼리는 정상 실행됐지만 조건에 맞는 데이터가 0건입니다.")
+                st.caption("조회 기간, 계정 분류, 거래처·제품명 또는 기타 필터 조건을 확인해 주세요.")
+            else:
+                st.markdown("### 상세 데이터")
 
-            st.dataframe(current_df.style.format(format_dict), use_container_width=True, height=400)
-            
-            # [핵심 구현] 표 저장 버튼 (표 바로 아래)
-            col_save, col_dummy = st.columns([1, 4])
-            with col_save:
-                save_key = f"save_{hash(current_sql_query)}"
-                if st.button("💾 이 표 저장하기", key=save_key, help="종합 분석을 위해 이 데이터를 보관함에 저장합니다."):
-                    # 데이터 저장 로직
-                    saved_item = {
-                        "query": current_question or 'No Question',
-                        "sql": current_sql_query,
-                        "data": current_df,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
-                    }
-                    # 중복 방지
-                    if not any(s['sql'] == current_sql_query for s in st.session_state.saved_tables):
-                        candidate_tables = [*st.session_state.saved_tables, saved_item]
-                        username = st.session_state.get('username')
-                        if not username:
-                            st.error("로그인 정보를 확인할 수 없어 표를 저장하지 못했습니다.")
-                        elif save_tables_to_file(candidate_tables, username):
-                            st.session_state.saved_tables = candidate_tables
-                            st.success(f"✅ 저장 완료! (현재 {len(candidate_tables)}개)")
+                # 숫자 포맷팅 (기존 로직 유지)
+                numeric_cols = current_df.select_dtypes(include=['number']).columns
+                exclude_keywords = ['id', 'code', '코드', '번호', 'no', 'year', 'month', '일자']
+                format_dict = {}
+                for col in numeric_cols:
+                    if any(k in col.lower() for k in exclude_keywords): continue
+                    is_integer_like = False
+                    if pd.api.types.is_integer_dtype(current_df[col]): is_integer_like = True
+                    elif pd.api.types.is_float_dtype(current_df[col]):
+                        valid_vals = current_df[col].dropna()
+                        if not valid_vals.empty and valid_vals.apply(lambda x: x.is_integer()).all(): is_integer_like = True
+                    format_dict[col] = "{:,.0f}" if is_integer_like else "{:,.2f}"
+
+                st.dataframe(current_df.style.format(format_dict), use_container_width=True, height=400)
+
+                # [핵심 구현] 표 저장 버튼 (표 바로 아래)
+                col_save, col_dummy = st.columns([1, 4])
+                with col_save:
+                    save_key = f"save_{hash(current_sql_query)}"
+                    if st.button("💾 이 표 저장하기", key=save_key, help="종합 분석을 위해 이 데이터를 보관함에 저장합니다."):
+                        saved_item = {
+                            "query": current_question or 'No Question',
+                            "sql": current_sql_query,
+                            "data": current_df,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+                        }
+                        if not any(s['sql'] == current_sql_query for s in st.session_state.saved_tables):
+                            candidate_tables = [*st.session_state.saved_tables, saved_item]
+                            username = st.session_state.get('username')
+                            if not username:
+                                st.error("로그인 정보를 확인할 수 없어 표를 저장하지 못했습니다.")
+                            elif save_tables_to_file(candidate_tables, username):
+                                st.session_state.saved_tables = candidate_tables
+                                st.success(f"✅ 저장 완료! (현재 {len(candidate_tables)}개)")
+                            else:
+                                st.error("표를 영구 저장하지 못했습니다. 기존 보관함은 그대로 유지됩니다.")
                         else:
-                            st.error("표를 영구 저장하지 못했습니다. 기존 보관함은 그대로 유지됩니다.")
-                    else:
-                        st.warning("⚠️ 이미 저장된 표입니다.")
-            
+                            st.warning("⚠️ 이미 저장된 표입니다.")
+
             st.markdown("### 생성된 SQL")
             st.code(current_sql_query, language='sql')
         else:
@@ -4151,14 +3698,13 @@ def render_dashboard_page():
         
         # SQL 실행
         with st.spinner("⚡ 쿼리를 실행하고 있습니다..."):
-            df = execute_sql_query(sql_query)
+            df, sql_error = execute_sql_query(sql_query)
         
         # 결과 처리
-        if df is None or df.empty:
-            if df is None:
-                ai_response = f"❌ 쿼리 실행 중 오류가 발생했습니다.\n\n생성된 SQL:\n```sql\n{sql_query}\n```"
-            else:
-                ai_response = "조회된 데이터가 없습니다."
+        if sql_error:
+            ai_response = f"❌ 쿼리 실행 오류: {sql_error}"
+        elif is_effectively_empty_result(df):
+            ai_response = "조회 조건에 맞는 데이터가 0건입니다."
         else:
             # 분석 보고서는 버튼을 눌렀을 때만 생성하도록 변경 (API 절약)
             ai_response = None  # 초기에는 보고서 생성하지 않음
@@ -4168,10 +3714,11 @@ def render_dashboard_page():
             'role': 'assistant',
             'content': ai_response,  # None이면 탭2에서 버튼으로 생성
             'sql': sql_query,
+            'sql_error': sql_error,
             'user_question': query_to_process  # 사용자 질문 저장
         }
         
-        if not df.empty:
+        if not is_effectively_empty_result(df):
             response_msg['result_df'] = df
         
         st.session_state.messages.append(response_msg)

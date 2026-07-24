@@ -24,7 +24,7 @@ SUPABASE_READER_PASSWORD = "replace-with-a-long-random-reader-password"
 AUTH_REQUIRED = false
 ALLOW_SIGNUP = false
 OPENAI_API_KEY = "sk-..."
-OPENAI_MODEL = "gpt-5.2"
+OPENAI_MODEL = "gpt-5.6-luna"
 ```
 
 `SUPABASE_READER_PASSWORD`는 기존 로그인과 겹치지 않는 긴 임의 값으로 만드세요. 앱이 실제 `talktodata_reader` DB 계정을 만들고 AI 조회 연결을 물리적으로 분리합니다. 비밀번호가 들어 있는 `secrets.toml`은 GitHub에 올리지 않습니다. 연결 주소나 비밀번호도 채팅에 붙여 넣지 마세요.
@@ -72,6 +72,7 @@ streamlit run sqlite_viewer.py
 
 ```text
 sqlite_viewer.py              Streamlit 앱
+sql_prompt.py                 실제 DB 스키마·관계·회계 의미 기반 SQL 프롬프트
 persistent_db.py              SQLite/PostgreSQL 공통 저장 계층
 migrate_to_supabase.py        최초 데이터 이전·검증 도구
 config_manager.py             테이블·컬럼 설정 관리
