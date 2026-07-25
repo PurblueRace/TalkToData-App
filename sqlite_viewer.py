@@ -1651,8 +1651,7 @@ st.markdown("""
         border-top: 1px solid #eaecf0;
     }
 
-    .ai-analysis-visuals__title,
-    .ai-analysis-detail-heading {
+    .ai-analysis-visuals__title {
         color: #101828;
         font-size: 1rem;
         line-height: 1.4;
@@ -1695,12 +1694,6 @@ st.markdown("""
         margin-top: 0.3rem;
         color: #667085;
         font-size: 0.77rem;
-    }
-
-    .ai-analysis-detail-heading {
-        margin: 1.75rem 0 0.75rem;
-        padding-top: 1.25rem;
-        border-top: 1px solid #eaecf0;
     }
 
     @media (max-width: 640px) {
@@ -3496,11 +3489,11 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
 
 def create_management_analysis_charts(
     saved_tables: List[Dict],
-    limit: int = 3,
+    limit: int = 2,
 ) -> List[Dict]:
     """Create deterministic charts from the same tables used by AI analysis."""
     charts: List[Dict] = []
-    chart_limit = max(1, min(int(limit), 3))
+    chart_limit = max(1, min(int(limit), 2))
     for source_number, item in enumerate(saved_tables, start=1):
         try:
             frame = item.get("data", pd.DataFrame())
@@ -3550,9 +3543,9 @@ def render_management_analysis_charts(saved_tables: List[Dict]) -> None:
     st.markdown(
         """
         <div class="ai-analysis-visuals">
-            <div class="ai-analysis-visuals__title">차트로 확인한 핵심 흐름</div>
+            <div class="ai-analysis-visuals__title">종합진단을 보완하는 차트</div>
             <div class="ai-analysis-visuals__description">
-                종합분석과 동일한 저장 표에서 질문 의도·열의 의미·단위를 확인해 차트를 자동 선택했습니다.
+                위 종합진단의 주요 근거를 빠르게 확인할 수 있도록 필요한 차트 1~2개만 표시합니다.
             </div>
         </div>
         """,
@@ -3997,7 +3990,7 @@ def render_dashboard_page():
         saved_table_count = len(st.session_state.saved_tables)
         render_dashboard_section_header(
             "AI 분석",
-            "선택한 저장 데이터를 함께 분석하고 핵심 차트와 수치 해설, 실행 과제를 정리합니다.",
+            "선택한 저장 데이터를 중심으로 핵심 진단과 실행 과제를 정리하고, 필요한 차트만 보조 근거로 제공합니다.",
             f"{saved_table_count}개 데이터" if saved_table_count else ""
         )
         
@@ -4029,7 +4022,7 @@ def render_dashboard_page():
                 <div class="ai-workspace__intro">
                     <div class="ai-workspace__title">분석 설정</div>
                     <div class="ai-workspace__description">
-                        각 표의 질문·SQL·전체 컬럼을 읽고, 적합한 차트와 실제 수치 해설을 종합진단과 함께 제공합니다.
+                        각 표의 질문·SQL·전체 컬럼을 읽어 종합진단을 먼저 만들고, 핵심 차트 1~2개로 내용을 보완합니다.
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -4051,7 +4044,7 @@ def render_dashboard_page():
                 )
 
                 st.markdown(
-                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개 · 전체 행으로 통계와 추세를 계산하고 최대 3개 차트와 해설을 만듭니다. 작은 표는 모든 값, 큰 표는 대표값을 AI에 전달하며 민감정보는 자동으로 가립니다.</div>',
+                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개 · 종합진단이 중심이며 필요한 경우 보조 차트 1~2개만 표시합니다. 작은 표는 모든 값, 큰 표는 대표값을 AI에 전달하며 민감정보는 자동으로 가립니다.</div>',
                     unsafe_allow_html=True
                 )
 
@@ -4109,16 +4102,12 @@ def render_dashboard_page():
                     st.session_state.saved_tables[index]
                     for index in report_source_indices
                 ]
-                if len(report_tables) == report_source_count:
-                    render_management_analysis_charts(report_tables)
-
-                st.markdown(
-                    '<div class="ai-analysis-detail-heading">상세 종합진단</div>',
-                    unsafe_allow_html=True,
-                )
 
                 import streamlit.components.v1 as components
                 components.html(saved_report, height=1100, scrolling=True)
+
+                if len(report_tables) == report_source_count:
+                    render_management_analysis_charts(report_tables)
     
     # [탭 3] 시각화
     with tab_visualization:
