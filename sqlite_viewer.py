@@ -25,7 +25,6 @@ from analysis_context import (
     parse_management_report,
     render_management_report_html,
 )
-from analysis_visuals import prepare_analysis_visual_data
 from app_access import PUBLIC_WORKSPACE_USERNAME, parse_flag
 from query_result import is_effectively_empty_result
 from sql_prompt import (
@@ -37,7 +36,6 @@ from visualization_utils import (
     MISSING_CATEGORY_LABEL,
     VISUALIZATION_TYPE_LABELS,
     available_visualization_types,
-    build_management_chart_explanation,
     format_compact_value,
     has_mixed_unit_values,
     is_composition_question,
@@ -1645,57 +1643,6 @@ st.markdown("""
         text-align: right;
     }
 
-    .ai-analysis-visuals {
-        margin: 1rem 0 0.75rem;
-        padding-top: 1rem;
-        border-top: 1px solid #eaecf0;
-    }
-
-    .ai-analysis-visuals__title {
-        color: #101828;
-        font-size: 1rem;
-        line-height: 1.4;
-        font-weight: 700;
-    }
-
-    .ai-analysis-visuals__description {
-        margin-top: 0.25rem;
-        color: #667085;
-        font-size: 0.82rem;
-        line-height: 1.55;
-    }
-
-    .ai-analysis-chart__source {
-        margin: 1.35rem 0 0.4rem;
-        color: #344054;
-        font-size: 0.86rem;
-        line-height: 1.5;
-        font-weight: 650;
-    }
-
-    .ai-analysis-chart__source-meta {
-        margin-left: 0.4rem;
-        color: #667085;
-        font-size: 0.76rem;
-        font-weight: 500;
-    }
-
-    .ai-analysis-chart__explanation {
-        margin: 0.1rem 0 1.5rem;
-        padding: 0.8rem 1rem;
-        border-left: 3px solid #2563eb;
-        background: #f8fafc;
-        color: #344054;
-        font-size: 0.84rem;
-        line-height: 1.65;
-    }
-
-    .ai-analysis-chart__note {
-        margin-top: 0.3rem;
-        color: #667085;
-        font-size: 0.77rem;
-    }
-
     @media (max-width: 640px) {
         .dashboard-onboarding__step {
             grid-template-columns: 2rem 1fr;
@@ -3033,7 +2980,6 @@ def _create_category_chart(profile, user_question: str):
 
     fig = go.Figure(
         go.Bar(
-            name=metric,
             x=grouped[metric],
             y=grouped[category].astype(str),
             orientation="h",
@@ -3090,7 +3036,6 @@ def _create_distribution_chart(profile):
     metric_format = visual_number_format(metric, metric_suffix)
     fig = go.Figure(
         go.Histogram(
-            name=metric,
             x=values,
             nbinsx=bins,
             marker={"color": _VIZ_PRIMARY, "line": {"color": "#FFFFFF", "width": 1}},
@@ -3484,113 +3429,6 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
             "<div style='padding:16px 18px;border:1px solid #e4e7ec;border-radius:12px;"
             "background:#f9fafb;color:#475467;font-family:Pretendard,sans-serif;font-size:14px;'>"
             f"분석을 완료하지 못했습니다. {safe_error}</div>"
-        )
-
-
-def create_management_analysis_charts(
-    saved_tables: List[Dict],
-    limit: int = 2,
-) -> List[Dict]:
-    """Create deterministic charts from the same tables used by AI analysis."""
-    charts: List[Dict] = []
-    chart_limit = max(1, min(int(limit), 2))
-    for source_number, item in enumerate(saved_tables, start=1):
-        try:
-            frame = item.get("data", pd.DataFrame())
-            if not isinstance(frame, pd.DataFrame) or frame.empty:
-                continue
-            safe_frame, safe_question = prepare_analysis_visual_data(
-                frame,
-                item.get("query") or "",
-            )
-            if safe_frame.empty:
-                continue
-            recommended = create_visualizations(safe_frame, safe_question, chart_type="auto")
-            if not recommended:
-                continue
-            chart = recommended[0]
-            if chart.get("figure") is None:
-                continue
-            chart_kind = str(chart.get("kind") or "auto")
-            charts.append(
-                {
-                    "source_number": source_number,
-                    "question": safe_question or "제목 없는 분석",
-                    "row_count": len(frame),
-                    "kind": chart_kind,
-                    "figure": chart["figure"],
-                    "explanation": build_management_chart_explanation(chart),
-                    "note": str(chart.get("note") or "").strip(),
-                }
-            )
-        except Exception as chart_error:
-            print(
-                f"[WARN] AI analysis chart skipped for table {source_number}: "
-                f"{type(chart_error).__name__}"
-            )
-            continue
-        if len(charts) >= chart_limit:
-            break
-    return charts
-
-
-def render_management_analysis_charts(saved_tables: List[Dict]) -> None:
-    """Render full-width evidence charts with a grounded explanation below each one."""
-    charts = create_management_analysis_charts(saved_tables)
-    if not charts:
-        return
-
-    st.markdown(
-        """
-        <div class="ai-analysis-visuals">
-            <div class="ai-analysis-visuals__title">종합진단을 보완하는 차트</div>
-            <div class="ai-analysis-visuals__description">
-                위 종합진단의 주요 근거를 빠르게 확인할 수 있도록 필요한 차트 1~2개만 표시합니다.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    for chart_index, chart in enumerate(charts, start=1):
-        safe_question = html.escape(chart["question"])
-        safe_explanation = html.escape(chart["explanation"])
-        safe_note = html.escape(chart["note"])
-        source_number = int(chart["source_number"])
-        row_count = int(chart["row_count"])
-        st.markdown(
-            f"""
-            <div class="ai-analysis-chart__source">
-                차트 {chart_index} · 표{source_number} · {safe_question}
-                <span class="ai-analysis-chart__source-meta">원본 {row_count:,}행</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.plotly_chart(
-            chart["figure"],
-            use_container_width=True,
-            theme=None,
-            key=f"ai_analysis_chart_{chart_index}_{source_number}",
-            config={
-                "displayModeBar": False,
-                "displaylogo": False,
-                "scrollZoom": False,
-                "responsive": True,
-            },
-        )
-        note_html = (
-            f'<div class="ai-analysis-chart__note">{safe_note}</div>'
-            if safe_note
-            else ""
-        )
-        st.markdown(
-            f"""
-            <div class="ai-analysis-chart__explanation">
-                <strong>차트 해석</strong> {safe_explanation}
-                {note_html}
-            </div>
-            """,
-            unsafe_allow_html=True,
         )
 
 
@@ -3990,7 +3828,7 @@ def render_dashboard_page():
         saved_table_count = len(st.session_state.saved_tables)
         render_dashboard_section_header(
             "AI 분석",
-            "선택한 저장 데이터를 중심으로 핵심 진단과 실행 과제를 정리하고, 필요한 차트만 보조 근거로 제공합니다.",
+            "선택한 저장 데이터를 함께 분석하고 핵심 변화와 실행 과제를 정리합니다.",
             f"{saved_table_count}개 데이터" if saved_table_count else ""
         )
         
@@ -4022,7 +3860,7 @@ def render_dashboard_page():
                 <div class="ai-workspace__intro">
                     <div class="ai-workspace__title">분석 설정</div>
                     <div class="ai-workspace__description">
-                        각 표의 질문·SQL·전체 컬럼을 읽어 종합진단을 먼저 만들고, 핵심 차트 1~2개로 내용을 보완합니다.
+                        각 표의 질문·SQL·전체 컬럼을 읽고 값의 분포와 주요 변화를 함께 분석합니다.
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -4044,7 +3882,7 @@ def render_dashboard_page():
                 )
 
                 st.markdown(
-                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개 · 종합진단이 중심이며 필요한 경우 보조 차트 1~2개만 표시합니다. 작은 표는 모든 값, 큰 표는 대표값을 AI에 전달하며 민감정보는 자동으로 가립니다.</div>',
+                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개 · 전체 행으로 통계와 추세를 계산하고, 작은 표는 모든 값, 큰 표는 대표값을 AI에 전달합니다. 민감정보 컬럼은 자동으로 가립니다.</div>',
                     unsafe_allow_html=True
                 )
 
@@ -4068,7 +3906,6 @@ def render_dashboard_page():
                         st.session_state.ai_analysis_report_meta = {
                             "version": AI_ANALYSIS_REPORT_VERSION,
                             "source_count": len(selected_tables),
-                            "source_indices": [int(index) for index in selected_source_indices],
                             "model": OPENAI_ANALYSIS_MODEL,
                             "reasoning_effort": "high",
                             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -4092,22 +3929,8 @@ def render_dashboard_page():
                 </div>
                 """, unsafe_allow_html=True)
 
-                report_source_indices = [
-                    index
-                    for index in report_meta.get("source_indices", [])
-                    if isinstance(index, int)
-                    and 0 <= index < len(st.session_state.saved_tables)
-                ]
-                report_tables = [
-                    st.session_state.saved_tables[index]
-                    for index in report_source_indices
-                ]
-
                 import streamlit.components.v1 as components
                 components.html(saved_report, height=1100, scrolling=True)
-
-                if len(report_tables) == report_source_count:
-                    render_management_analysis_charts(report_tables)
     
     # [탭 3] 시각화
     with tab_visualization:

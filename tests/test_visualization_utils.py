@@ -1,11 +1,9 @@
 import unittest
-from types import SimpleNamespace
 
 import pandas as pd
 
 from visualization_utils import (
     available_visualization_types,
-    build_management_chart_explanation,
     format_compact_value,
     is_composition_question,
     is_correlation_question,
@@ -20,22 +18,6 @@ from visualization_utils import (
 
 
 class VisualizationUtilsTests(unittest.TestCase):
-    @staticmethod
-    def _fake_figure(*traces, x_title="", y_title="", x_suffix="", y_suffix=""):
-        return SimpleNamespace(
-            data=list(traces),
-            layout=SimpleNamespace(
-                xaxis=SimpleNamespace(
-                    title=SimpleNamespace(text=x_title),
-                    ticksuffix=x_suffix,
-                ),
-                yaxis=SimpleNamespace(
-                    title=SimpleNamespace(text=y_title),
-                    ticksuffix=y_suffix,
-                ),
-            ),
-        )
-
     def test_profile_separates_time_measure_category_and_identifiers(self):
         frame = pd.DataFrame(
             {
@@ -227,90 +209,6 @@ class VisualizationUtilsTests(unittest.TestCase):
 
         self.assertNotIn("bar", choices)
         self.assertNotIn("line", choices)
-
-    def test_management_chart_explanation_describes_time_change(self):
-        figure = self._fake_figure(
-            SimpleNamespace(
-                x=["2026년 6월", "2026년 7월"],
-                y=[100_000_000, 125_000_000],
-                name="매출액",
-                orientation=None,
-                type="scatter",
-            ),
-            y_suffix="원",
-        )
-
-        explanation = build_management_chart_explanation(
-            {"kind": "line", "figure": figure},
-        )
-
-        self.assertIn("2026년 6월", explanation)
-        self.assertIn("2026년 7월", explanation)
-        self.assertIn("25.0% 증가", explanation)
-
-    def test_management_chart_explanation_names_top_category_and_share(self):
-        figure = self._fake_figure(
-            SimpleNamespace(
-                labels=["BCM", "CER", "MAL"],
-                values=[60_000_000, 30_000_000, 10_000_000],
-                type="pie",
-            ),
-        )
-
-        explanation = build_management_chart_explanation(
-            {"kind": "composition", "figure": figure},
-        )
-
-        self.assertIn("BCM", explanation)
-        self.assertIn("60.0%", explanation)
-
-    def test_management_chart_explanation_cautions_on_correlation(self):
-        figure = self._fake_figure(
-            SimpleNamespace(
-                x=[10, 20, 30, 40, 50, 60, 70, 80],
-                y=[20, 40, 60, 80, 100, 120, 140, 160],
-                type="scatter",
-            ),
-            x_title="광고비",
-            y_title="매출액",
-        )
-
-        explanation = build_management_chart_explanation(
-            {"kind": "correlation", "figure": figure},
-        )
-
-        self.assertIn("상관계수", explanation)
-        self.assertIn("원인을 단정", explanation)
-
-    def test_management_chart_explanation_uses_benchmark_alerts(self):
-        figure = self._fake_figure(
-            SimpleNamespace(
-                name="현재재고",
-                x=[5, 12],
-                y=["BCM", "CER"],
-                orientation="h",
-                type="bar",
-            ),
-            SimpleNamespace(
-                name="안전재고",
-                x=[10, 10],
-                y=["BCM", "CER"],
-                orientation="h",
-                type="bar",
-            ),
-            x_suffix="개",
-        )
-
-        explanation = build_management_chart_explanation(
-            {
-                "kind": "benchmark",
-                "figure": figure,
-                "note": "빨간색은 안전재고보다 부족한 항목입니다.",
-            }
-        )
-
-        self.assertIn("1개가 기준 미달", explanation)
-        self.assertIn("BCM", explanation)
 
 
 if __name__ == "__main__":

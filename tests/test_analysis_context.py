@@ -10,7 +10,6 @@ from analysis_context import (
     parse_management_report,
     render_management_report_html,
 )
-from analysis_visuals import prepare_analysis_visual_data
 
 
 def _json_text(value: object) -> str:
@@ -319,36 +318,6 @@ class AnalysisEvidenceTests(unittest.TestCase):
         self.assertNotIn("hong@example.com", context)
         self.assertNotIn("010-1234-5678", context)
         self.assertIn("민감정보 마스킹", context)
-
-    def test_analysis_visual_data_drops_sensitive_columns_and_masks_inline_pii(self):
-        frame = pd.DataFrame(
-            {
-                "사원명": ["홍길동", "김노을"],
-                "메모": ["홍길동 담당 · hong@example.com 문의", "010-1234-5678 연락"],
-                "매출액": [100, 120],
-            }
-        )
-
-        safe_frame, safe_question = prepare_analysis_visual_data(
-            frame,
-            "홍길동 사원의 매출과 hong@example.com 문의 분석",
-        )
-
-        self.assertNotIn("사원명", safe_frame.columns)
-        self.assertNotIn("홍길동", safe_question)
-        self.assertNotIn("홍길동", safe_frame.to_string())
-        self.assertNotIn("hong@example.com", safe_question)
-        self.assertNotIn("hong@example.com", safe_frame.to_string())
-        self.assertNotIn("010-1234-5678", safe_frame.to_string())
-        self.assertIn("매출액", safe_frame.columns)
-
-    def test_analysis_visual_data_disambiguates_duplicate_columns(self):
-        frame = pd.DataFrame([["A", "B", 100], ["C", "D", 120]])
-        frame.columns = ["구분", "구분", "매출액"]
-
-        safe_frame, _ = prepare_analysis_visual_data(frame, "구분별 매출")
-
-        self.assertEqual(list(safe_frame.columns), ["구분", "구분__2", "매출액"])
 
 
 class ManagementAnalysisPromptTests(unittest.TestCase):
