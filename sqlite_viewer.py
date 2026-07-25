@@ -1275,6 +1275,13 @@ st.markdown("""
         white-space: nowrap;
     }
 
+    .saved-table-card__label {
+        margin-right: 0.35rem;
+        color: #667085;
+        font-size: 0.82rem;
+        font-weight: 600;
+    }
+
     .saved-table-card__meta {
         margin-top: 0.25rem;
         color: #667085;
@@ -3604,7 +3611,7 @@ def render_dashboard_page():
 
                     with info_col:
                         st.markdown(f"""
-                        <div class="saved-table-card__title">{safe_query}</div>
+                        <div class="saved-table-card__title"><span class="saved-table-card__label">내 질문 :</span>{safe_query}</div>
                         <div class="saved-table-card__meta">
                             {safe_timestamp} · {row_count:,}행 × {column_count:,}열
                         </div>
