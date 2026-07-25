@@ -23,6 +23,7 @@ from analysis_context import (
     build_analysis_context,
     build_management_analysis_prompts,
     parse_management_report,
+    prepare_analysis_visual_data,
     render_management_report_html,
 )
 from app_access import PUBLIC_WORKSPACE_USERNAME, parse_flag
@@ -36,6 +37,7 @@ from visualization_utils import (
     MISSING_CATEGORY_LABEL,
     VISUALIZATION_TYPE_LABELS,
     available_visualization_types,
+    build_management_chart_explanation,
     format_compact_value,
     has_mixed_unit_values,
     is_composition_question,
@@ -110,7 +112,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-AI_ANALYSIS_REPORT_VERSION = 6
+AI_ANALYSIS_REPORT_VERSION = 7
 
 # ============================================
 # 🧰 OpenAI 에러 포맷팅 유틸 (400/401 원인 확인용)
@@ -186,19 +188,27 @@ if os.getenv("OPENAI_BASE_URL") and os.getenv("OPENAI_BASE_URL").strip():
     st.warning("ℹ️ 환경변수 `OPENAI_BASE_URL`가 설정되어 있습니다. 기본 OpenAI 엔드포인트가 아니라면 401이 발생할 수 있어요.")
 
 # ============================================
-# 🤖 OpenAI 모델 (프로젝트 전역 기본값)
-# - 기본 모델: 비용 효율적인 GPT-5.6 Luna
-# - 필요 시 Streamlit Secrets / 환경변수로 오버라이드 가능: OPENAI_MODEL
+# 🤖 OpenAI 모델 (역할별 설정)
+# - SQL 생성: GPT-5.6 Luna / low
+# - 종합 분석: GPT-5.6 Luna / high
+# - Streamlit Secrets 또는 환경변수에서 역할별로 오버라이드할 수 있습니다.
 # ============================================
-OPENAI_MODEL = None
-try:
-    if hasattr(st, "secrets"):
-        OPENAI_MODEL = st.secrets.get("OPENAI_MODEL")
-except Exception:
-    OPENAI_MODEL = None
+def _read_openai_setting(setting_name: str) -> str | None:
+    configured_value = None
+    try:
+        if hasattr(st, "secrets"):
+            configured_value = st.secrets.get(setting_name)
+    except Exception:
+        configured_value = None
+    normalized_value = str(configured_value or "").strip()
+    if normalized_value:
+        return normalized_value
+    normalized_value = str(os.getenv(setting_name) or "").strip()
+    return normalized_value or None
 
-if not OPENAI_MODEL:
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+
+OPENAI_SQL_MODEL = _read_openai_setting("OPENAI_SQL_MODEL") or "gpt-5.6-luna"
+OPENAI_ANALYSIS_MODEL = _read_openai_setting("OPENAI_ANALYSIS_MODEL") or "gpt-5.6-luna"
 
 # OpenAI 클라이언트 초기화
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -1635,6 +1645,64 @@ st.markdown("""
         text-align: right;
     }
 
+    .ai-analysis-visuals {
+        margin: 1rem 0 0.75rem;
+        padding-top: 1rem;
+        border-top: 1px solid #eaecf0;
+    }
+
+    .ai-analysis-visuals__title,
+    .ai-analysis-detail-heading {
+        color: #101828;
+        font-size: 1rem;
+        line-height: 1.4;
+        font-weight: 700;
+    }
+
+    .ai-analysis-visuals__description {
+        margin-top: 0.25rem;
+        color: #667085;
+        font-size: 0.82rem;
+        line-height: 1.55;
+    }
+
+    .ai-analysis-chart__source {
+        margin: 1.35rem 0 0.4rem;
+        color: #344054;
+        font-size: 0.86rem;
+        line-height: 1.5;
+        font-weight: 650;
+    }
+
+    .ai-analysis-chart__source-meta {
+        margin-left: 0.4rem;
+        color: #667085;
+        font-size: 0.76rem;
+        font-weight: 500;
+    }
+
+    .ai-analysis-chart__explanation {
+        margin: 0.1rem 0 1.5rem;
+        padding: 0.8rem 1rem;
+        border-left: 3px solid #2563eb;
+        background: #f8fafc;
+        color: #344054;
+        font-size: 0.84rem;
+        line-height: 1.65;
+    }
+
+    .ai-analysis-chart__note {
+        margin-top: 0.3rem;
+        color: #667085;
+        font-size: 0.77rem;
+    }
+
+    .ai-analysis-detail-heading {
+        margin: 1.75rem 0 0.75rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid #eaecf0;
+    }
+
     @media (max-width: 640px) {
         .dashboard-onboarding__step {
             grid-template-columns: 2rem 1fr;
@@ -1772,7 +1840,7 @@ def generate_sql_from_schema(question: str) -> str:
         print(f"[DEBUG] User prompt length: {len(user_prompt)}")
         
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=OPENAI_SQL_MODEL,
             messages=[
                 {"role": "system", "content": get_sql_system_prompt()},
                 {"role": "user", "content": user_prompt}
@@ -2972,6 +3040,7 @@ def _create_category_chart(profile, user_question: str):
 
     fig = go.Figure(
         go.Bar(
+            name=metric,
             x=grouped[metric],
             y=grouped[category].astype(str),
             orientation="h",
@@ -3028,6 +3097,7 @@ def _create_distribution_chart(profile):
     metric_format = visual_number_format(metric, metric_suffix)
     fig = go.Figure(
         go.Histogram(
+            name=metric,
             x=values,
             nbinsx=bins,
             marker={"color": _VIZ_PRIMARY, "line": {"color": "#FFFFFF", "width": 1}},
@@ -3404,11 +3474,12 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
         )
 
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=OPENAI_ANALYSIS_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            reasoning_effort="high",
             max_completion_tokens=8000,
         )
         raw_content = response.choices[0].message.content
@@ -3421,6 +3492,114 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
             "background:#f9fafb;color:#475467;font-family:Pretendard,sans-serif;font-size:14px;'>"
             f"분석을 완료하지 못했습니다. {safe_error}</div>"
         )
+
+
+def create_management_analysis_charts(
+    saved_tables: List[Dict],
+    limit: int = 3,
+) -> List[Dict]:
+    """Create deterministic charts from the same tables used by AI analysis."""
+    charts: List[Dict] = []
+    chart_limit = max(1, min(int(limit), 3))
+    for source_number, item in enumerate(saved_tables, start=1):
+        try:
+            frame = item.get("data", pd.DataFrame())
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                continue
+            safe_frame, safe_question = prepare_analysis_visual_data(
+                frame,
+                item.get("query") or "",
+            )
+            if safe_frame.empty:
+                continue
+            recommended = create_visualizations(safe_frame, safe_question, chart_type="auto")
+            if not recommended:
+                continue
+            chart = recommended[0]
+            if chart.get("figure") is None:
+                continue
+            chart_kind = str(chart.get("kind") or "auto")
+            charts.append(
+                {
+                    "source_number": source_number,
+                    "question": safe_question or "제목 없는 분석",
+                    "row_count": len(frame),
+                    "kind": chart_kind,
+                    "figure": chart["figure"],
+                    "explanation": build_management_chart_explanation(chart),
+                    "note": str(chart.get("note") or "").strip(),
+                }
+            )
+        except Exception as chart_error:
+            print(
+                f"[WARN] AI analysis chart skipped for table {source_number}: "
+                f"{type(chart_error).__name__}"
+            )
+            continue
+        if len(charts) >= chart_limit:
+            break
+    return charts
+
+
+def render_management_analysis_charts(saved_tables: List[Dict]) -> None:
+    """Render full-width evidence charts with a grounded explanation below each one."""
+    charts = create_management_analysis_charts(saved_tables)
+    if not charts:
+        return
+
+    st.markdown(
+        """
+        <div class="ai-analysis-visuals">
+            <div class="ai-analysis-visuals__title">차트로 확인한 핵심 흐름</div>
+            <div class="ai-analysis-visuals__description">
+                종합분석과 동일한 저장 표에서 질문 의도·열의 의미·단위를 확인해 차트를 자동 선택했습니다.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    for chart_index, chart in enumerate(charts, start=1):
+        safe_question = html.escape(chart["question"])
+        safe_explanation = html.escape(chart["explanation"])
+        safe_note = html.escape(chart["note"])
+        source_number = int(chart["source_number"])
+        row_count = int(chart["row_count"])
+        st.markdown(
+            f"""
+            <div class="ai-analysis-chart__source">
+                차트 {chart_index} · 표{source_number} · {safe_question}
+                <span class="ai-analysis-chart__source-meta">원본 {row_count:,}행</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            chart["figure"],
+            use_container_width=True,
+            theme=None,
+            key=f"ai_analysis_chart_{chart_index}_{source_number}",
+            config={
+                "displayModeBar": False,
+                "displaylogo": False,
+                "scrollZoom": False,
+                "responsive": True,
+            },
+        )
+        note_html = (
+            f'<div class="ai-analysis-chart__note">{safe_note}</div>'
+            if safe_note
+            else ""
+        )
+        st.markdown(
+            f"""
+            <div class="ai-analysis-chart__explanation">
+                <strong>차트 해석</strong> {safe_explanation}
+                {note_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
 
 def check_table_exists(table_name: str) -> bool:
     """테이블 존재 여부 확인"""
@@ -3818,7 +3997,7 @@ def render_dashboard_page():
         saved_table_count = len(st.session_state.saved_tables)
         render_dashboard_section_header(
             "AI 분석",
-            "선택한 저장 데이터를 함께 살펴보고 핵심 변화, 리스크, 실행 과제를 정리합니다.",
+            "선택한 저장 데이터를 함께 분석하고 핵심 차트와 수치 해설, 실행 과제를 정리합니다.",
             f"{saved_table_count}개 데이터" if saved_table_count else ""
         )
         
@@ -3850,7 +4029,7 @@ def render_dashboard_page():
                 <div class="ai-workspace__intro">
                     <div class="ai-workspace__title">분석 설정</div>
                     <div class="ai-workspace__description">
-                        각 표의 질문·SQL·전체 컬럼을 읽고 값의 분포와 표 사이의 연결 근거를 함께 분석합니다.
+                        각 표의 질문·SQL·전체 컬럼을 읽고, 적합한 차트와 실제 수치 해설을 종합진단과 함께 제공합니다.
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -3866,13 +4045,13 @@ def render_dashboard_page():
 
                 user_additional_prompt = st.text_area(
                     "분석 요청 (선택)",
-                    placeholder="예: 전년 대비 변동 원인과 다음 분기 리스크를 중심으로 분석해 주세요.",
+                    placeholder="예: 전년 대비 변동 원인과 다음 분기 실행 과제를 중심으로 분석해 주세요.",
                     height=110,
                     key="ai_analysis_prompt"
                 )
 
                 st.markdown(
-                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개 · 전체 행으로 통계와 추세를 계산하고, 작은 표는 모든 값, 큰 표는 대표값을 AI에 전달합니다. 민감정보 컬럼은 자동으로 가립니다.</div>',
+                    f'<div class="ai-workspace__selection-note">선택한 표 {len(selected_source_indices)}개 · 전체 행으로 통계와 추세를 계산하고 최대 3개 차트와 해설을 만듭니다. 작은 표는 모든 값, 큰 표는 대표값을 AI에 전달하며 민감정보는 자동으로 가립니다.</div>',
                     unsafe_allow_html=True
                 )
 
@@ -3896,6 +4075,9 @@ def render_dashboard_page():
                         st.session_state.ai_analysis_report_meta = {
                             "version": AI_ANALYSIS_REPORT_VERSION,
                             "source_count": len(selected_tables),
+                            "source_indices": [int(index) for index in selected_source_indices],
+                            "model": OPENAI_ANALYSIS_MODEL,
+                            "reasoning_effort": "high",
                             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                         }
 
@@ -3916,6 +4098,24 @@ def render_dashboard_page():
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
+                report_source_indices = [
+                    index
+                    for index in report_meta.get("source_indices", [])
+                    if isinstance(index, int)
+                    and 0 <= index < len(st.session_state.saved_tables)
+                ]
+                report_tables = [
+                    st.session_state.saved_tables[index]
+                    for index in report_source_indices
+                ]
+                if len(report_tables) == report_source_count:
+                    render_management_analysis_charts(report_tables)
+
+                st.markdown(
+                    '<div class="ai-analysis-detail-heading">상세 종합진단</div>',
+                    unsafe_allow_html=True,
+                )
 
                 import streamlit.components.v1 as components
                 components.html(saved_report, height=1100, scrolling=True)

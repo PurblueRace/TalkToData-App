@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import re
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
@@ -422,6 +423,230 @@ def available_visualization_types(df: pd.DataFrame, question: str = "") -> list[
     if len(primary_values) >= 10 and primary_values.nunique() > 1:
         choices.append("distribution")
     return choices
+
+
+def _chart_values(values: Any) -> list[Any]:
+    if values is None:
+        return []
+    if hasattr(values, "tolist"):
+        values = values.tolist()
+    try:
+        return list(values)
+    except TypeError:
+        return []
+
+
+def _finite_chart_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _chart_axis_text(figure: Any, axis_name: str, field: str) -> str:
+    try:
+        axis = getattr(figure.layout, axis_name)
+        if field == "title":
+            value = axis.title.text
+        else:
+            value = getattr(axis, field)
+    except (AttributeError, TypeError):
+        return ""
+    return str(value or "").strip()
+
+
+def _chart_change_text(
+    label: str,
+    first_label: Any,
+    first_value: float,
+    last_label: Any,
+    last_value: float,
+    suffix: str,
+) -> str:
+    difference = last_value - first_value
+    direction = "증가" if difference > 0 else "감소" if difference < 0 else "변동이 없었"
+    if difference == 0:
+        change = "변동이 없었습니다"
+    elif first_value:
+        change = f"{abs(difference / first_value) * 100:,.1f}% {direction}했습니다"
+    else:
+        change = f"{format_compact_value(abs(difference), label, unit_override=suffix)} {direction}했습니다"
+    return (
+        f"{label}은 {first_label} "
+        f"{format_compact_value(first_value, label, unit_override=suffix)}에서 "
+        f"{last_label} {format_compact_value(last_value, label, unit_override=suffix)}로 {change}."
+    )
+
+
+def build_management_chart_explanation(chart: Mapping[str, Any]) -> str:
+    """Explain the exact values carried by the rendered Plotly figure."""
+    figure = chart.get("figure")
+    kind = str(chart.get("kind") or "").lower()
+    note = str(chart.get("note") or "").strip()
+    traces = list(getattr(figure, "data", []) or []) if figure is not None else []
+    if not traces:
+        return note or "표시할 수 있는 차트 값이 없습니다."
+
+    y_suffix = _chart_axis_text(figure, "yaxis", "ticksuffix")
+    x_suffix = _chart_axis_text(figure, "xaxis", "ticksuffix")
+
+    if kind == "benchmark" and len(traces) >= 2:
+        actual_trace, benchmark_trace = traces[:2]
+        categories = _chart_values(getattr(actual_trace, "y", None))
+        actual_values = _chart_values(getattr(actual_trace, "x", None))
+        benchmark_values = _chart_values(getattr(benchmark_trace, "x", None))
+        rows = []
+        for category, actual, benchmark in zip(categories, actual_values, benchmark_values):
+            actual_number = _finite_chart_number(actual)
+            benchmark_number = _finite_chart_number(benchmark)
+            if actual_number is not None and benchmark_number is not None:
+                rows.append((category, actual_number, benchmark_number))
+        if rows:
+            shortage = "부족" in note
+            alerts = [row for row in rows if row[1] < row[2]] if shortage else [row for row in rows if row[1] > row[2]]
+            focus = max(rows, key=lambda row: abs(row[1] - row[2]))
+            alert_label = "기준 미달" if shortage else "기준 초과"
+            return (
+                f"표시된 {len(rows):,}개 항목 중 {len(alerts):,}개가 {alert_label}입니다. "
+                f"차이가 가장 큰 항목은 {focus[0]}이며 "
+                f"{getattr(actual_trace, 'name', None) or '실제값'} "
+                f"{format_compact_value(focus[1], str(getattr(actual_trace, 'name', '') or ''), unit_override=x_suffix)}, "
+                f"{getattr(benchmark_trace, 'name', None) or '기준값'} "
+                f"{format_compact_value(focus[2], str(getattr(benchmark_trace, 'name', '') or ''), unit_override=x_suffix)}입니다."
+            )
+
+    if kind in {"correlation", "scatter"}:
+        trace = traces[0]
+        if str(getattr(trace, "type", "")) == "heatmap":
+            matrix = _chart_values(getattr(trace, "z", None))
+            labels = _chart_values(getattr(trace, "x", None))
+            strongest = None
+            for row_index, row in enumerate(matrix):
+                for column_index, value in enumerate(_chart_values(row)):
+                    number = _finite_chart_number(value)
+                    if row_index == column_index or number is None:
+                        continue
+                    if strongest is None or abs(number) > abs(strongest[2]):
+                        strongest = (row_index, column_index, number)
+            if strongest and strongest[0] < len(labels) and strongest[1] < len(labels):
+                return (
+                    f"가장 강한 관계는 {labels[strongest[0]]}과 {labels[strongest[1]]} 사이의 "
+                    f"상관계수 {strongest[2]:.2f}입니다. 상관관계만으로 원인을 단정할 수는 없습니다."
+                )
+        pairs = []
+        for x_value, y_value in zip(
+            _chart_values(getattr(trace, "x", None)),
+            _chart_values(getattr(trace, "y", None)),
+        ):
+            x_number = _finite_chart_number(x_value)
+            y_number = _finite_chart_number(y_value)
+            if x_number is not None and y_number is not None:
+                pairs.append((x_number, y_number))
+        if len(pairs) >= 2:
+            coefficient = pd.Series([item[0] for item in pairs]).corr(
+                pd.Series([item[1] for item in pairs])
+            )
+            if pd.notna(coefficient):
+                strength = "강한" if abs(coefficient) >= 0.7 else "보통" if abs(coefficient) >= 0.4 else "약한"
+                direction = "같은" if coefficient >= 0 else "반대"
+                x_label = _chart_axis_text(figure, "xaxis", "title") or "가로축 지표"
+                y_label = _chart_axis_text(figure, "yaxis", "title") or "세로축 지표"
+                return (
+                    f"{x_label}과 {y_label}의 상관계수는 {coefficient:.2f}로, "
+                    f"{strength} 수준에서 {direction} 방향으로 움직였습니다. "
+                    "상관관계만으로 원인을 단정할 수는 없습니다."
+                )
+
+    if kind == "distribution":
+        trace = traces[0]
+        values = [
+            number
+            for number in (
+                _finite_chart_number(value)
+                for value in _chart_values(getattr(trace, "x", None))
+            )
+            if number is not None
+        ]
+        if values:
+            metric = (
+                str(getattr(trace, "name", None) or "").strip()
+                or _chart_axis_text(figure, "xaxis", "title")
+                or "표시 지표"
+            )
+            series = pd.Series(values)
+            return (
+                f"{metric}의 중앙값은 {format_compact_value(series.median(), metric, unit_override=x_suffix)}이며, "
+                f"최솟값 {format_compact_value(series.min(), metric, unit_override=x_suffix)}부터 "
+                f"최댓값 {format_compact_value(series.max(), metric, unit_override=x_suffix)}까지 분포합니다."
+            )
+
+    if kind in {"composition", "donut"}:
+        trace = traces[0]
+        labels = _chart_values(getattr(trace, "labels", None))
+        values = [_finite_chart_number(value) for value in _chart_values(getattr(trace, "values", None))]
+        rows = [(label, value) for label, value in zip(labels, values) if value is not None]
+        if rows:
+            top_label, top_value = max(rows, key=lambda row: row[1])
+            total = sum(value for _, value in rows)
+            share = top_value / total * 100 if total else 0
+            return f"{top_label}이 표시된 합계의 {share:,.1f}%로 가장 큰 비중을 차지합니다."
+
+    change_candidates = []
+    for trace in traces:
+        if str(getattr(trace, "orientation", "") or "").lower() == "h":
+            continue
+        labels = _chart_values(getattr(trace, "x", None))
+        values = _chart_values(getattr(trace, "y", None))
+        pairs = []
+        for label, value in zip(labels, values):
+            number = _finite_chart_number(value)
+            if number is not None:
+                pairs.append((label, number))
+        if len(pairs) >= 2:
+            first_label, first_value = pairs[0]
+            last_label, last_value = pairs[-1]
+            relative_change = abs(last_value - first_value) / abs(first_value) if first_value else abs(last_value - first_value)
+            change_candidates.append(
+                (
+                    relative_change,
+                    str(getattr(trace, "name", None) or "표시 지표"),
+                    first_label,
+                    first_value,
+                    last_label,
+                    last_value,
+                )
+            )
+    if change_candidates:
+        _, label, first_label, first_value, last_label, last_value = max(change_candidates, key=lambda item: item[0])
+        return _chart_change_text(label, first_label, first_value, last_label, last_value, y_suffix)
+
+    horizontal_trace = next(
+        (
+            trace
+            for trace in traces
+            if str(getattr(trace, "orientation", "") or "").lower() == "h"
+        ),
+        None,
+    )
+    if horizontal_trace is not None:
+        rows = []
+        for category, value in zip(
+            _chart_values(getattr(horizontal_trace, "y", None)),
+            _chart_values(getattr(horizontal_trace, "x", None)),
+        ):
+            number = _finite_chart_number(value)
+            if number is not None:
+                rows.append((category, number))
+        if rows:
+            top_category, top_value = max(rows, key=lambda row: row[1])
+            metric = str(getattr(horizontal_trace, "name", None) or "표시 지표")
+            return (
+                f"표시된 항목 중 {top_category}의 {metric}이 "
+                f"{format_compact_value(top_value, metric, unit_override=x_suffix)}로 가장 큽니다."
+            )
+
+    return note or "차트에 표시된 값을 기준으로 핵심 흐름을 확인할 수 있습니다."
 
 
 def time_sort_values(series: pd.Series) -> pd.Series:

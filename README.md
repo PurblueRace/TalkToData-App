@@ -24,12 +24,15 @@ SUPABASE_READER_PASSWORD = "replace-with-a-long-random-reader-password"
 AUTH_REQUIRED = false
 ALLOW_SIGNUP = false
 OPENAI_API_KEY = "sk-..."
-OPENAI_MODEL = "gpt-5.6-luna"
+OPENAI_SQL_MODEL = "gpt-5.6-luna"
+OPENAI_ANALYSIS_MODEL = "gpt-5.6-luna"
 ```
 
 `SUPABASE_READER_PASSWORD`는 기존 로그인과 겹치지 않는 긴 임의 값으로 만드세요. 앱이 실제 `talktodata_reader` DB 계정을 만들고 AI 조회 연결을 물리적으로 분리합니다. 비밀번호가 들어 있는 `secrets.toml`은 GitHub에 올리지 않습니다. 연결 주소나 비밀번호도 채팅에 붙여 넣지 마세요.
 
 `AUTH_REQUIRED = false`이면 로그인 없이 공개 작업공간으로 바로 들어갑니다. 나중에 로그인 기능을 되살릴 때는 Streamlit Secrets에서 `AUTH_REQUIRED = true`로 바꾸면 기존 공개 세션도 다시 로그인 화면으로 전환됩니다.
+
+SQL 생성은 `OPENAI_SQL_MODEL`을 low 추론으로, 종합분석은 `OPENAI_ANALYSIS_MODEL`을 high 추론으로 호출합니다. 역할별 키를 생략하면 두 작업 모두 `gpt-5.6-luna`를 사용합니다.
 
 ### 2. 기존 제조업 데이터 확인 및 이전
 
