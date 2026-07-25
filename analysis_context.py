@@ -1277,12 +1277,101 @@ def _remove_hidden_report_sections(fragment: str) -> str:
     return serialized[len("<root>") : -len("</root>")]
 
 
-def render_management_report_html(report: Mapping[str, Any]) -> str:
-    """Render a rich report with trusted CSS and sanitized model HTML."""
+def _insert_trusted_report_middle_html(
+    safe_fragment: str,
+    trusted_middle_html: str,
+) -> str:
+    """Insert one server-created block between the report's main sections."""
+    trusted_middle_html = str(trusted_middle_html or "").strip()
+    if not trusted_middle_html or 'data-analysis-chart="1"' in safe_fragment:
+        return safe_fragment
+
+    xml_fragment = re.sub(
+        r"<(br|hr)(\s[^<>]*?)?>",
+        lambda match: f"<{match.group(1)}{match.group(2) or ''}/>",
+        safe_fragment,
+        flags=re.IGNORECASE,
+    )
+    try:
+        root = ET.fromstring(f"<root>{xml_fragment}</root>")
+    except ET.ParseError:
+        return safe_fragment
+
+    parent_by_child = {
+        child: parent
+        for parent in root.iter()
+        for child in list(parent)
+    }
+
+    def element_classes(element: ET.Element) -> set[str]:
+        return set(str(element.attrib.get("class", "")).split())
+
+    def is_report_section(element: ET.Element) -> bool:
+        return (
+            element.tag in {"section", "div"}
+            and "report-section" in element_classes(element)
+        )
+
+    def section_title(element: ET.Element) -> str:
+        for descendant in element.iter():
+            if descendant.tag in {"h2", "h3", "h4"}:
+                return re.sub(r"\s+", "", "".join(descendant.itertext()))
+        return ""
+
+    sections = [element for element in root.iter() if is_report_section(element)]
+    if not sections:
+        return safe_fragment
+
+    insert_parent: ET.Element | None = None
+    insert_index = 0
+
+    diagnosis = next(
+        (section for section in sections if "핵심진단" in section_title(section)),
+        None,
+    )
+    metrics = next(
+        (section for section in sections if "핵심지표와변화" in section_title(section)),
+        None,
+    )
+    if diagnosis is not None:
+        insert_parent = parent_by_child.get(diagnosis)
+        if insert_parent is not None:
+            insert_index = list(insert_parent).index(diagnosis)
+    elif metrics is not None:
+        insert_parent = parent_by_child.get(metrics)
+        if insert_parent is not None:
+            insert_index = list(insert_parent).index(metrics) + 1
+    else:
+        anchor = sections[max(0, (len(sections) - 1) // 2)]
+        insert_parent = parent_by_child.get(anchor)
+        if insert_parent is not None:
+            insert_index = list(insert_parent).index(anchor) + 1
+
+    if insert_parent is None:
+        return safe_fragment
+
+    slot_id = "__trusted_management_chart_slot__"
+    insert_parent.insert(insert_index, ET.Element("div", {"id": slot_id}))
+    serialized = ET.tostring(root, encoding="unicode", method="html")
+    serialized = serialized[len("<root>") : -len("</root>")]
+    placeholder = f'<div id="{slot_id}"></div>'
+    return serialized.replace(placeholder, trusted_middle_html, 1)
+
+
+def render_management_report_html(
+    report: Mapping[str, Any],
+    *,
+    trusted_middle_html: str = "",
+) -> str:
+    """Render sanitized model HTML with an optional trusted server-created block."""
     fragment = report.get("html_fragment") if isinstance(report, Mapping) else None
     if not isinstance(fragment, str):
         fragment = _render_legacy_report_fragment(report)
     safe_fragment = _sanitize_report_fragment(fragment)
+    safe_fragment = _insert_trusted_report_middle_html(
+        safe_fragment,
+        trusted_middle_html,
+    )
     return f"""
 <style>
 * {{ box-sizing: border-box; }}
@@ -1296,6 +1385,12 @@ body {{ margin: 0; background: #f4f7fb; color: #1d2939; font-family: Pretendard,
 .report-section {{ background: #fff; border: 1px solid #dde4ee; border-radius: 18px; padding: 22px 24px; margin: 14px 0; box-shadow: 0 5px 16px rgba(15, 23, 42, .035); }}
 .section-heading {{ color: #101828; font-size: 19px; margin: 0 0 14px; letter-spacing: -.02em; }}
 .section-intro {{ color: #475467; margin: -5px 0 16px; }}
+.report-chart-section {{ overflow: hidden; }}
+.report-chart-source {{ color: #667085; font-size: 13px; margin: -6px 0 10px; }}
+.report-chart-frame {{ width: 100%; min-height: 410px; overflow: hidden; border-top: 1px solid #edf0f4; border-bottom: 1px solid #edf0f4; }}
+.report-chart-frame > div {{ width: 100% !important; }}
+.report-chart-caption {{ color: #344054; font-size: 13.5px; margin: 13px 0 0; }}
+.report-chart-caption strong {{ color: #101828; margin-right: 5px; }}
 .table-wrap {{ width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; border: 1px solid #e4e7ec; border-radius: 13px; margin: 10px 0; background: #fff; }}
 .data-table {{ width: 100%; min-width: 960px; border-collapse: collapse; table-layout: auto; background: #fff; font-size: 13.5px; line-height: 1.55; }}
 .data-table caption {{ text-align: left; padding: 14px 16px; color: #344054; font-weight: 800; background: #f8fafc; }}
@@ -1318,6 +1413,7 @@ p {{ margin: 8px 0; }}
   .report-hero {{ padding: 25px 22px; }}
   .report-title {{ font-size: 24px; }}
   .report-section {{ padding: 20px 18px; }}
+  .report-chart-frame {{ min-height: 380px; }}
   .detail-list {{ grid-template-columns: 1fr; gap: 3px; }}
 }}
 </style>

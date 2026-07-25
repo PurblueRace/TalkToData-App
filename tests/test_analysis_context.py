@@ -434,6 +434,49 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         self.assertNotIn("<script>", rendered.lower())
         self.assertNotIn("```", rendered)
 
+    def test_trusted_chart_is_inserted_between_metrics_and_diagnosis(self):
+        report = {
+            "html_fragment": """
+            <section class="report-hero"><h1 class="report-title">경영지원 종합 진단</h1></section>
+            <section class="report-section"><h2 class="section-heading">핵심 지표와 변화</h2><p>지표</p></section>
+            <section class="report-section"><h2 class="section-heading">핵심 진단</h2><p>진단</p></section>
+            <section class="report-section"><h2 class="section-heading">실행 계획</h2><p>실행</p></section>
+            """,
+        }
+        trusted_chart = (
+            '<section class="report-section report-chart-section" data-analysis-chart="1">'
+            '<h2 class="section-heading">핵심 흐름 한눈에 보기</h2>'
+            '<script>trustedChart()</script></section>'
+        )
+
+        rendered = render_management_report_html(
+            report,
+            trusted_middle_html=trusted_chart,
+        )
+
+        self.assertEqual(rendered.count('data-analysis-chart="1"'), 1)
+        self.assertLess(rendered.index("핵심 지표와 변화"), rendered.index("핵심 흐름 한눈에 보기"))
+        self.assertLess(rendered.index("핵심 흐름 한눈에 보기"), rendered.index("핵심 진단"))
+        self.assertIn("trustedChart()", rendered)
+
+    def test_trusted_chart_falls_back_to_the_middle_of_unknown_sections(self):
+        report = {
+            "html_fragment": """
+            <section class="report-section"><h2 class="section-heading">첫 번째</h2></section>
+            <section class="report-section"><h2 class="section-heading">두 번째</h2></section>
+            <section class="report-section"><h2 class="section-heading">세 번째</h2></section>
+            """,
+        }
+
+        rendered = render_management_report_html(
+            report,
+            trusted_middle_html='<section data-analysis-chart="1">차트</section>',
+        )
+
+        self.assertEqual(rendered.count('data-analysis-chart="1"'), 1)
+        self.assertLess(rendered.index("두 번째"), rendered.index("차트"))
+        self.assertLess(rendered.index("차트"), rendered.index("세 번째"))
+
     def test_rich_html_report_keeps_tables_and_removes_unsafe_markup(self):
         raw = """```html
         <section class="report-hero" onclick="alert(1)">

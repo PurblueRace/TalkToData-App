@@ -25,6 +25,11 @@ from analysis_context import (
     parse_management_report,
     render_management_report_html,
 )
+from analysis_visuals import (
+    build_management_chart_html,
+    prepare_analysis_visual_data,
+    should_embed_management_chart,
+)
 from app_access import PUBLIC_WORKSPACE_USERNAME, parse_flag
 from query_result import is_effectively_empty_result
 from sql_prompt import (
@@ -110,7 +115,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-AI_ANALYSIS_REPORT_VERSION = 8
+AI_ANALYSIS_REPORT_VERSION = 9
 
 # ============================================
 # 🧰 OpenAI 에러 포맷팅 유틸 (400/401 원인 확인용)
@@ -3388,6 +3393,73 @@ def init_session_state():
 # ============================================================
 # 2. 저장 데이터 종합 분석 함수
 # ============================================================
+_MANAGEMENT_CHART_KIND_SCORE = {
+    "benchmark": 60,
+    "line": 50,
+    "composition": 40,
+    "donut": 40,
+    "correlation": 35,
+    "scatter": 35,
+    "ranking": 30,
+    "bar": 30,
+    "distribution": 10,
+}
+
+
+def create_management_analysis_chart(
+    saved_tables: List[Dict],
+    report_text: str = "",
+) -> Optional[Dict]:
+    """Choose exactly one grounded chart from the tables used in the report."""
+    candidates: List[Dict] = []
+    for source_number, item in enumerate(saved_tables, start=1):
+        try:
+            frame = item.get("data", pd.DataFrame())
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                continue
+            safe_frame, safe_question = prepare_analysis_visual_data(
+                frame,
+                item.get("query") or "",
+                item.get("sql") or "",
+            )
+            if safe_frame.empty:
+                continue
+            recommended = create_visualizations(
+                safe_frame,
+                safe_question,
+                chart_type="auto",
+            )
+            if not recommended or recommended[0].get("figure") is None:
+                continue
+            chart = recommended[0]
+            chart_kind = str(chart.get("kind") or "auto").lower()
+            mention_count = len(
+                re.findall(
+                    rf"(?<!\d)표\s*{source_number}(?!\d)",
+                    str(report_text or ""),
+                )
+            )
+            candidates.append(
+                {
+                    "source_number": source_number,
+                    "question": safe_question or "제목 없는 분석",
+                    "row_count": len(frame),
+                    "chart": chart,
+                    "score": (
+                        mention_count,
+                        _MANAGEMENT_CHART_KIND_SCORE.get(chart_kind, 0),
+                        -source_number,
+                    ),
+                }
+            )
+        except Exception as chart_error:
+            print(
+                f"[WARN] AI analysis chart skipped for table {source_number}: "
+                f"{type(chart_error).__name__}"
+            )
+    return max(candidates, key=lambda candidate: candidate["score"]) if candidates else None
+
+
 def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: str = "") -> str:
     """저장된 SQL 결과의 전체 프로파일과 관계를 바탕으로 경영 분석을 생성합니다."""
     global client
@@ -3422,7 +3494,32 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
         )
         raw_content = response.choices[0].message.content
         report = parse_management_report(raw_content or "")
-        return render_management_report_html(report)
+        trusted_chart_html = ""
+        try:
+            selected_chart = (
+                create_management_analysis_chart(
+                    saved_tables,
+                    report_text=raw_content or "",
+                )
+                if should_embed_management_chart(raw_content, report)
+                else None
+            )
+            if selected_chart:
+                trusted_chart_html = build_management_chart_html(
+                    selected_chart["chart"],
+                    source_number=selected_chart["source_number"],
+                    question=selected_chart["question"],
+                    row_count=selected_chart["row_count"],
+                )
+        except Exception as chart_error:
+            print(
+                "[WARN] AI analysis chart could not be embedded: "
+                f"{type(chart_error).__name__}"
+            )
+        return render_management_report_html(
+            report,
+            trusted_middle_html=trusted_chart_html,
+        )
     except Exception as e:
         safe_error = html.escape(_format_openai_exception(e))
         return (
