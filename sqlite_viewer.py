@@ -1215,6 +1215,100 @@ st.markdown("""
         line-height: 1.55;
     }
 
+    .dashboard-onboarding {
+        padding: 1.25rem;
+        border: 1px solid #dbe4f0;
+        border-radius: 14px;
+        background: #f8fafc;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+    }
+
+    .dashboard-onboarding__kicker {
+        color: #2563eb;
+        font-size: 0.75rem;
+        line-height: 1.3;
+        font-weight: 700;
+    }
+
+    .dashboard-onboarding__title {
+        margin-top: 0.25rem;
+        color: #101828;
+        font-size: 1.075rem;
+        line-height: 1.4;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+
+    .dashboard-onboarding__description {
+        margin-top: 0.25rem;
+        color: #667085;
+        font-size: 0.85rem;
+        line-height: 1.5;
+    }
+
+    .dashboard-onboarding__steps {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.75rem;
+        margin: 1rem 0 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .dashboard-onboarding__step {
+        min-width: 0;
+        padding: 0.95rem;
+        border: 1px solid #e4e7ec;
+        border-radius: 11px;
+        background: #ffffff;
+    }
+
+    .dashboard-onboarding__step--current {
+        border-color: #b2ccff;
+        background: #eff6ff;
+    }
+
+    .dashboard-onboarding__number {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.75rem;
+        height: 1.75rem;
+        border-radius: 999px;
+        background: #e4e7ec;
+        color: #344054;
+        font-size: 0.8rem;
+        line-height: 1;
+        font-weight: 700;
+    }
+
+    .dashboard-onboarding__step--current .dashboard-onboarding__number {
+        background: #2563eb;
+        color: #ffffff;
+    }
+
+    .dashboard-onboarding__step-title {
+        margin-top: 0.65rem;
+        color: #1d2939;
+        font-size: 0.9rem;
+        line-height: 1.4;
+        font-weight: 700;
+    }
+
+    .dashboard-onboarding__step-description {
+        margin-top: 0.3rem;
+        color: #667085;
+        font-size: 0.8rem;
+        line-height: 1.5;
+        word-break: keep-all;
+    }
+
+    @media (max-width: 900px) {
+        .dashboard-onboarding__steps {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
     .dashboard-section-header {
         display: flex;
         align-items: flex-end;
@@ -1414,6 +1508,10 @@ st.markdown("""
     }
 
     @media (max-width: 640px) {
+        .dashboard-onboarding__steps {
+            grid-template-columns: 1fr;
+        }
+
         .dashboard-section-header,
         .ai-analysis-result-header {
             align-items: flex-start;
@@ -3331,6 +3429,39 @@ def render_dashboard_empty_state(title: str, description: str) -> None:
     """, unsafe_allow_html=True)
 
 
+def render_dashboard_onboarding_guide() -> None:
+    """Show the first-use journey from a natural-language question to AI diagnosis."""
+    st.markdown("""
+    <section class="dashboard-onboarding" aria-label="처음 이용 가이드">
+        <div class="dashboard-onboarding__kicker">처음 이용 가이드</div>
+        <div class="dashboard-onboarding__title">질문부터 AI 경영진단까지, 아래 순서대로 진행하세요</div>
+        <div class="dashboard-onboarding__description">한 번 찾은 결과를 저장하면 시각화와 종합 분석에서 계속 활용할 수 있습니다.</div>
+        <ol class="dashboard-onboarding__steps">
+            <li class="dashboard-onboarding__step dashboard-onboarding__step--current">
+                <span class="dashboard-onboarding__number">1</span>
+                <div class="dashboard-onboarding__step-title">분석할 질문을 입력하세요</div>
+                <div class="dashboard-onboarding__step-description">위 검색창에 평소 말하듯 질문하면 SQL과 결과 표가 생성됩니다.</div>
+            </li>
+            <li class="dashboard-onboarding__step">
+                <span class="dashboard-onboarding__number">2</span>
+                <div class="dashboard-onboarding__step-title">결과 표를 저장하세요</div>
+                <div class="dashboard-onboarding__step-description">결과 아래의 ‘이 표 저장하기’를 눌러 분석 자료로 보관하세요.</div>
+            </li>
+            <li class="dashboard-onboarding__step">
+                <span class="dashboard-onboarding__number">3</span>
+                <div class="dashboard-onboarding__step-title">시각적으로 확인하세요</div>
+                <div class="dashboard-onboarding__step-description">시각화 탭에서 저장 표와 차트 형태를 선택해 흐름을 확인하세요.</div>
+            </li>
+            <li class="dashboard-onboarding__step">
+                <span class="dashboard-onboarding__number">4</span>
+                <div class="dashboard-onboarding__step-title">AI 경영진단을 받으세요</div>
+                <div class="dashboard-onboarding__step-description">AI 분석 탭에서 저장된 표를 선택해 종합 경영진단을 시작하세요.</div>
+            </li>
+        </ol>
+    </section>
+    """, unsafe_allow_html=True)
+
+
 def render_dashboard_section_header(title: str, description: str, meta: str = "") -> None:
     """Render a compact header for a dashboard tab section."""
     safe_title = html.escape(title)
@@ -3558,10 +3689,7 @@ def render_dashboard_page():
             st.markdown("### 생성된 SQL")
             st.code(current_sql_query, language='sql')
         else:
-            render_dashboard_empty_state(
-                "분석할 질문을 입력하세요",
-                "위 검색창에 자연어로 질문하면 생성된 SQL과 분석 결과를 이 영역에서 확인할 수 있습니다."
-            )
+            render_dashboard_onboarding_guide()
 
     # [탭 2] 저장된 표 관리
     with tab_saved:
