@@ -27,6 +27,7 @@ from analysis_context import (
 )
 from analysis_visuals import (
     build_management_chart_html,
+    embed_management_chart_in_rendered_report,
     prepare_analysis_visual_data,
     should_embed_management_chart,
 )
@@ -115,7 +116,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-AI_ANALYSIS_REPORT_VERSION = 9
+AI_ANALYSIS_REPORT_VERSION = 10
 
 # ============================================
 # 🧰 OpenAI 에러 포맷팅 유틸 (400/401 원인 확인용)
@@ -3516,9 +3517,10 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
                 "[WARN] AI analysis chart could not be embedded: "
                 f"{type(chart_error).__name__}"
             )
-        return render_management_report_html(
-            report,
-            trusted_middle_html=trusted_chart_html,
+        rendered_report = render_management_report_html(report)
+        return embed_management_chart_in_rendered_report(
+            rendered_report,
+            trusted_chart_html,
         )
     except Exception as e:
         safe_error = html.escape(_format_openai_exception(e))

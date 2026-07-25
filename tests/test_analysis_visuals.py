@@ -10,6 +10,7 @@ except ImportError:
 
 from analysis_visuals import (
     build_management_chart_html,
+    embed_management_chart_in_rendered_report,
     prepare_analysis_visual_data,
     should_embed_management_chart,
     summarize_management_chart,
@@ -74,6 +75,26 @@ class AnalysisVisualTests(unittest.TestCase):
                 {"html_fragment": "<section>정상 분석</section>"},
             )
         )
+
+    def test_chart_is_inserted_into_legacy_rendered_report(self):
+        rendered_report = """
+        <style>.report-section{background:#fff}</style>
+        <article class="report-shell">
+          <section class="report-section"><h2>핵심 지표와 변화</h2><p>지표</p></section>
+          <section class="report-section"><h2>핵심 진단</h2><p>진단</p></section>
+          <section class="report-section"><h2>실행 계획</h2><p>실행</p></section>
+        </article>
+        """
+        chart_html = '<section data-analysis-chart="1">차트</section>'
+
+        result = embed_management_chart_in_rendered_report(
+            rendered_report,
+            chart_html,
+        )
+
+        self.assertEqual(result.count('data-analysis-chart="1"'), 1)
+        self.assertLess(result.index("핵심 지표와 변화"), result.index("차트"))
+        self.assertLess(result.index("차트"), result.index("핵심 진단"))
 
     @unittest.skipUnless(go is not None, "Plotly is installed by the app requirements")
     def test_chart_html_contains_exactly_one_chart_block_and_safe_payload(self):

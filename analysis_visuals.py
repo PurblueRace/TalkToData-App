@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import math
 import re
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from typing import Any
 
@@ -23,6 +24,10 @@ from visualization_utils import format_compact_value
 
 
 _SCRIPT_END_RE = re.compile(r"</script", flags=re.IGNORECASE)
+_REPORT_SHELL_RE = re.compile(
+    r'<article\s+class=["\']report-shell["\']\s*>',
+    flags=re.IGNORECASE,
+)
 
 
 def _safe_visual_text(value: object, *, limit: int = 500) -> str:
@@ -102,6 +107,92 @@ def should_embed_management_chart(
             "AI가 분석 결과를 반환하지 않았습니다.",
             "분석 결과 형식 오류",
         )
+    )
+
+
+def embed_management_chart_in_rendered_report(
+    rendered_report: str,
+    trusted_chart_html: str,
+) -> str:
+    """Insert a trusted chart into an already-sanitized report from any renderer version."""
+    rendered_report = str(rendered_report or "")
+    trusted_chart_html = str(trusted_chart_html or "").strip()
+    if not trusted_chart_html or 'data-analysis-chart="1"' in rendered_report:
+        return rendered_report
+
+    shell_match = _REPORT_SHELL_RE.search(rendered_report)
+    shell_end = rendered_report.rfind("</article>")
+    if shell_match is None or shell_end < shell_match.end():
+        return rendered_report
+
+    safe_fragment = rendered_report[shell_match.end() : shell_end]
+    xml_fragment = re.sub(
+        r"<(br|hr)(\s[^<>]*?)?>",
+        lambda match: f"<{match.group(1)}{match.group(2) or ''}/>",
+        safe_fragment,
+        flags=re.IGNORECASE,
+    )
+    try:
+        root = ET.fromstring(f"<root>{xml_fragment}</root>")
+    except ET.ParseError:
+        return rendered_report
+
+    parent_by_child = {
+        child: parent
+        for parent in root.iter()
+        for child in list(parent)
+    }
+
+    def element_classes(element: ET.Element) -> set[str]:
+        return set(str(element.attrib.get("class", "")).split())
+
+    def is_report_section(element: ET.Element) -> bool:
+        return (
+            element.tag in {"section", "div"}
+            and "report-section" in element_classes(element)
+        )
+
+    def section_title(element: ET.Element) -> str:
+        for descendant in element.iter():
+            if descendant.tag in {"h2", "h3", "h4"}:
+                return re.sub(r"\s+", "", "".join(descendant.itertext()))
+        return ""
+
+    sections = [element for element in root.iter() if is_report_section(element)]
+    if not sections:
+        return rendered_report
+
+    diagnosis = next(
+        (section for section in sections if "핵심진단" in section_title(section)),
+        None,
+    )
+    metrics = next(
+        (section for section in sections if "핵심지표와변화" in section_title(section)),
+        None,
+    )
+    if diagnosis is not None:
+        anchor = diagnosis
+    elif metrics is not None:
+        anchor = metrics
+    else:
+        anchor = sections[max(0, (len(sections) - 1) // 2)]
+    insert_parent = parent_by_child.get(anchor)
+    if insert_parent is None:
+        return rendered_report
+    insert_index = list(insert_parent).index(anchor)
+    if diagnosis is None:
+        insert_index += 1
+
+    slot_id = "__trusted_management_chart_slot__"
+    insert_parent.insert(insert_index, ET.Element("div", {"id": slot_id}))
+    serialized = ET.tostring(root, encoding="unicode", method="html")
+    serialized = serialized[len("<root>") : -len("</root>")]
+    placeholder = f'<div id="{slot_id}"></div>'
+    injected_fragment = serialized.replace(placeholder, trusted_chart_html, 1)
+    return (
+        rendered_report[: shell_match.end()]
+        + injected_fragment
+        + rendered_report[shell_end:]
     )
 
 
@@ -335,6 +426,15 @@ def build_management_chart_html(
     safe_question = html.escape(_clip_text(question, 180))
     explanation = html.escape(summarize_management_chart(chart))
     return (
+        '<style>'
+        '.report-chart-section{overflow:hidden}'
+        '.report-chart-source{color:#667085;font-size:13px;margin:-6px 0 10px}'
+        '.report-chart-frame{width:100%;min-height:410px;overflow:hidden;border-top:1px solid #edf0f4;border-bottom:1px solid #edf0f4}'
+        '.report-chart-frame>div{width:100%!important}'
+        '.report-chart-caption{color:#344054;font-size:13.5px;margin:13px 0 0}'
+        '.report-chart-caption strong{color:#101828;margin-right:5px}'
+        '@media(max-width:720px){.report-chart-frame{min-height:380px}}'
+        '</style>'
         '<section class="report-section report-chart-section" data-analysis-chart="1">'
         '<h2 class="section-heading">핵심 흐름 한눈에 보기</h2>'
         f'<p class="report-chart-source">표{int(source_number)} · {safe_question} · 원본 {int(row_count):,}행</p>'
