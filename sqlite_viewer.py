@@ -110,7 +110,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-AI_ANALYSIS_REPORT_VERSION = 5
+AI_ANALYSIS_REPORT_VERSION = 6
 
 # ============================================
 # 🧰 OpenAI 에러 포맷팅 유틸 (400/401 원인 확인용)

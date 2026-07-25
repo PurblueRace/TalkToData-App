@@ -359,10 +359,13 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         self.assertIn("D1 같은 영문형 식별자 대신 표1 형식", system_prompt)
         self.assertIn("실제 데이터 값에 포함된 D1은 변경하지 않는다", system_prompt)
         self.assertIn(
-            '"추가로 찾을 표" data-table: 순서 / 추가로 찾을 표 / 짧은 검색 질문.',
+            '"추가로 찾을 표" data-table: 순서 / 질문 의도 / 짧은 검색 질문.',
             user_prompt,
         )
+        self.assertNotIn("순서 / 추가로 찾을 표 / 짧은 검색 질문", user_prompt)
         self.assertIn("반드시 2~3개만 추천", user_prompt)
+        self.assertIn('"질문 의도"는 현재 분석에서 무엇을 판단하거나 확인하려는지', user_prompt)
+        self.assertIn("조회할 컬럼을 반복해서 나열하지 않는다", user_prompt)
         self.assertIn("한 번에 표 하나만 조회", user_prompt)
         self.assertIn("권장 20~45자", user_prompt)
         self.assertIn("3개 열과 2~3개 행", user_prompt)
