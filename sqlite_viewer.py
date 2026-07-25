@@ -1258,10 +1258,12 @@ st.markdown("""
         display: grid;
         grid-template-columns: 2rem minmax(12rem, 0.8fr) 2fr;
         align-items: center;
-        gap: 0.75rem;
+        gap: 1rem;
         min-width: 0;
-        padding: 0.85rem 0.25rem;
+        min-height: 3.75rem;
+        padding: 1rem 0.4rem;
         border-bottom: 1px solid #e4e7ec;
+        box-sizing: border-box;
     }
 
     .dashboard-onboarding__step--current {
