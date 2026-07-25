@@ -3664,6 +3664,13 @@ def render_dashboard_page():
         else:
             source_options = list(range(saved_table_count))
 
+            st.info(
+                "**저장된 표를 불러와 AI 분석에 활용합니다.**\n\n"
+                "② 저장된 표에서 보관한 결과 중 아래에서 선택한 표의 질문·SQL·컬럼·값을 "
+                "함께 읽어 종합 분석합니다.",
+                icon="📥",
+            )
+
             def format_ai_source(source_index: int) -> str:
                 source_item = st.session_state.saved_tables[source_index]
                 source_df = source_item.get('data', pd.DataFrame())
