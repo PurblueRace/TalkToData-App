@@ -559,6 +559,138 @@ st.markdown("""
         box-shadow: 0 0 0 1px rgba(66, 133, 244, 0.18), 0 1px 6px rgba(32, 33, 36, 0.28) !important;
         transform: none !important;
     }
+
+    /* 메인 질문 예시를 세로 룰렛처럼 순환 표시합니다. */
+    .st-key-main_search {
+        position: relative !important;
+    }
+
+    .st-key-main_search::after {
+        content: "예: 6월 대비 7월 제품별 매출 증감을 보여줘";
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        left: 0.5rem;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 60px;
+        padding: 0 2.25rem;
+        overflow: hidden;
+        box-sizing: border-box;
+        color: #8b8f97;
+        font-size: 16px;
+        line-height: 1.4;
+        text-align: center;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        pointer-events: none;
+        will-change: transform, opacity;
+        animation: queryPromptRoulette 20s ease-in-out infinite;
+    }
+
+    .st-key-main_search input::placeholder {
+        color: transparent !important;
+        opacity: 0 !important;
+    }
+
+    .st-key-main_search:has(input:not(:placeholder-shown))::after {
+        opacity: 0 !important;
+        animation-play-state: paused;
+    }
+
+    @keyframes queryPromptRoulette {
+        0% {
+            content: "예: 6월 대비 7월 제품별 매출 증감을 보여줘";
+            opacity: 0;
+            transform: translateY(14px);
+        }
+        3%, 15% {
+            content: "예: 6월 대비 7월 제품별 매출 증감을 보여줘";
+            opacity: 1;
+            transform: translateY(0);
+        }
+        18%, 19.99% {
+            content: "예: 6월 대비 7월 제품별 매출 증감을 보여줘";
+            opacity: 0;
+            transform: translateY(-14px);
+        }
+        20% {
+            content: "예: 제품별 매출과 매출원가를 월별로 비교해줘";
+            opacity: 0;
+            transform: translateY(14px);
+        }
+        23%, 35% {
+            content: "예: 제품별 매출과 매출원가를 월별로 비교해줘";
+            opacity: 1;
+            transform: translateY(0);
+        }
+        38%, 39.99% {
+            content: "예: 제품별 매출과 매출원가를 월별로 비교해줘";
+            opacity: 0;
+            transform: translateY(-14px);
+        }
+        40% {
+            content: "예: 월별 판관비 계정별 증감을 보여줘";
+            opacity: 0;
+            transform: translateY(14px);
+        }
+        43%, 55% {
+            content: "예: 월별 판관비 계정별 증감을 보여줘";
+            opacity: 1;
+            transform: translateY(0);
+        }
+        58%, 59.99% {
+            content: "예: 월별 판관비 계정별 증감을 보여줘";
+            opacity: 0;
+            transform: translateY(-14px);
+        }
+        60% {
+            content: "예: 제품별 소요 원재료와 소요 기간을 보여줘";
+            opacity: 0;
+            transform: translateY(14px);
+        }
+        63%, 75% {
+            content: "예: 제품별 소요 원재료와 소요 기간을 보여줘";
+            opacity: 1;
+            transform: translateY(0);
+        }
+        78%, 79.99% {
+            content: "예: 제품별 소요 원재료와 소요 기간을 보여줘";
+            opacity: 0;
+            transform: translateY(-14px);
+        }
+        80% {
+            content: "예: 프로젝트별 예산과 실제 비용을 비교해줘";
+            opacity: 0;
+            transform: translateY(14px);
+        }
+        83%, 95% {
+            content: "예: 프로젝트별 예산과 실제 비용을 비교해줘";
+            opacity: 1;
+            transform: translateY(0);
+        }
+        98%, 99.99% {
+            content: "예: 프로젝트별 예산과 실제 비용을 비교해줘";
+            opacity: 0;
+            transform: translateY(-14px);
+        }
+        100% {
+            content: "예: 6월 대비 7월 제품별 매출 증감을 보여줘";
+            opacity: 0;
+            transform: translateY(14px);
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .st-key-main_search::after {
+            content: "예: 6월 대비 7월 제품별 매출 증감을 보여줘";
+            opacity: 1;
+            transform: none;
+            animation: none;
+        }
+    }
     
     /* Expander 내부 input은 검색창 스타일 적용 안 함 (검색창 CSS 뒤에 배치하여 우선순위 확보) */
     div[data-testid="stExpander"] input,
@@ -3499,105 +3631,10 @@ def render_dashboard_page():
     # 공백 추가
     st.write("")
     
-    # 애니메이션 placeholder JavaScript 추가 (3초마다 부드럽게 교체)
-    st.markdown("""
-    <script>
-    const placeholders = [
-        "올해 접대비 지출 100만원 이상 거래처 상위 5곳",
-        "1분기와 2분기의 부가세 대급금과 예수금 변동액을 알려줘",
-        "지난 3개월 동안 급여 지출이 가장 많았던 부서는?",
-        "이번달 매출 상위 10개 거래처와 전월 대비 증감률"
-    ];
-    
-    let currentIndex = 0;
-    let animationTimer = null;
-    
-    function changePlaceholder() {
-        const input = document.querySelector('input[aria-label="질문"]');
-        if (!input) {
-            // Streamlit의 다른 selector 시도
-            const altInput = document.querySelector('div[data-testid="stTextInput"] input');
-            if (altInput) {
-                handlePlaceholderChange(altInput);
-            }
-            return;
-        }
-        handlePlaceholderChange(input);
-    }
-    
-    function handlePlaceholderChange(input) {
-        // 사용자가 입력 중이면 애니메이션 중지
-        if (input.value && input.value.length > 0) {
-            if (animationTimer) {
-                clearInterval(animationTimer);
-                animationTimer = null;
-            }
-            return;
-        }
-        
-        // Fade out 애니메이션
-        input.style.transition = 'opacity 0.5s ease-in-out';
-        input.style.opacity = '0';
-        
-        setTimeout(() => {
-            // 입력값이 여전히 없을 때만 변경
-            if (!input.value || input.value.length === 0) {
-                currentIndex = (currentIndex + 1) % placeholders.length;
-                input.placeholder = placeholders[currentIndex];
-                
-                // Fade in 애니메이션
-                input.style.opacity = '1';
-            }
-        }, 500);
-    }
-    
-    // 페이지 로드 시 첫 placeholder 설정
-    window.addEventListener('load', () => {
-        const input = document.querySelector('input[aria-label="질문"]') || 
-                      document.querySelector('div[data-testid="stTextInput"] input');
-        if (input) {
-            input.placeholder = placeholders[0];
-            currentIndex = 1;
-            
-            // 사용자 입력 감지
-            input.addEventListener('input', function() {
-                if (this.value && this.value.length > 0) {
-                    if (animationTimer) {
-                        clearInterval(animationTimer);
-                        animationTimer = null;
-                    }
-                } else {
-                    // 입력이 비워지면 다시 애니메이션 시작
-                    if (!animationTimer) {
-                        animationTimer = setInterval(changePlaceholder, 3000);
-                    }
-                }
-            });
-            
-            // 3초마다 변경
-            animationTimer = setInterval(changePlaceholder, 3000);
-        }
-    });
-    
-    // DOMContentLoaded도 처리
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            const input = document.querySelector('input[aria-label="질문"]') || 
-                          document.querySelector('div[data-testid="stTextInput"] input');
-            if (input && !input.placeholder) {
-                input.placeholder = placeholders[0];
-                currentIndex = 1;
-                animationTimer = setInterval(changePlaceholder, 3000);
-            }
-        });
-    }
-    </script>
-    """, unsafe_allow_html=True)
-    
     # 2. 입력창 (구분선 등 불필요한 UI 제거, 심플하게 유지)
     user_input = st.text_input(
         label="질문",
-        placeholder="예: 지난달 100만원 이상 지출한 거래처 중 상위 5곳 보여줘",
+        placeholder="예: 6월 대비 7월 제품별 매출 증감을 보여줘",
         label_visibility="collapsed",
         key="main_search"
     )
