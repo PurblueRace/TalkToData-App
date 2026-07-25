@@ -1247,25 +1247,25 @@ st.markdown("""
     }
 
     .dashboard-onboarding__steps {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 0.75rem;
+        display: block;
         margin: 1rem 0 0;
         padding: 0;
+        border-top: 1px solid #e4e7ec;
         list-style: none;
     }
 
     .dashboard-onboarding__step {
+        display: grid;
+        grid-template-columns: 2rem minmax(12rem, 0.8fr) 2fr;
+        align-items: center;
+        gap: 0.75rem;
         min-width: 0;
-        padding: 0.95rem;
-        border: 1px solid #e4e7ec;
-        border-radius: 11px;
-        background: #ffffff;
+        padding: 0.85rem 0.25rem;
+        border-bottom: 1px solid #e4e7ec;
     }
 
     .dashboard-onboarding__step--current {
-        border-color: #b2ccff;
-        background: #eff6ff;
+        background: transparent;
     }
 
     .dashboard-onboarding__number {
@@ -1288,7 +1288,7 @@ st.markdown("""
     }
 
     .dashboard-onboarding__step-title {
-        margin-top: 0.65rem;
+        margin: 0;
         color: #1d2939;
         font-size: 0.9rem;
         line-height: 1.4;
@@ -1296,17 +1296,11 @@ st.markdown("""
     }
 
     .dashboard-onboarding__step-description {
-        margin-top: 0.3rem;
+        margin: 0;
         color: #667085;
         font-size: 0.8rem;
         line-height: 1.5;
         word-break: keep-all;
-    }
-
-    @media (max-width: 900px) {
-        .dashboard-onboarding__steps {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
     }
 
     .dashboard-section-header {
@@ -1508,8 +1502,13 @@ st.markdown("""
     }
 
     @media (max-width: 640px) {
-        .dashboard-onboarding__steps {
-            grid-template-columns: 1fr;
+        .dashboard-onboarding__step {
+            grid-template-columns: 2rem 1fr;
+            align-items: start;
+        }
+
+        .dashboard-onboarding__step-description {
+            grid-column: 2;
         }
 
         .dashboard-section-header,
@@ -3440,7 +3439,7 @@ def render_dashboard_onboarding_guide() -> None:
             <li class="dashboard-onboarding__step dashboard-onboarding__step--current">
                 <span class="dashboard-onboarding__number">1</span>
                 <div class="dashboard-onboarding__step-title">분석할 질문을 입력하세요</div>
-                <div class="dashboard-onboarding__step-description">위 검색창에 평소 말하듯 질문하면 SQL과 결과 표가 생성됩니다.</div>
+                <div class="dashboard-onboarding__step-description">위 검색창에 자연어로 질문해 SQL과 결과 표를 만드세요.</div>
             </li>
             <li class="dashboard-onboarding__step">
                 <span class="dashboard-onboarding__number">2</span>
@@ -3450,12 +3449,12 @@ def render_dashboard_onboarding_guide() -> None:
             <li class="dashboard-onboarding__step">
                 <span class="dashboard-onboarding__number">3</span>
                 <div class="dashboard-onboarding__step-title">시각적으로 확인하세요</div>
-                <div class="dashboard-onboarding__step-description">시각화 탭에서 저장 표와 차트 형태를 선택해 흐름을 확인하세요.</div>
+                <div class="dashboard-onboarding__step-description">시각화 탭에서 저장 표와 막대·선 등 차트 형태를 선택하세요.</div>
             </li>
             <li class="dashboard-onboarding__step">
                 <span class="dashboard-onboarding__number">4</span>
                 <div class="dashboard-onboarding__step-title">AI 경영진단을 받으세요</div>
-                <div class="dashboard-onboarding__step-description">AI 분석 탭에서 저장된 표를 선택해 종합 경영진단을 시작하세요.</div>
+                <div class="dashboard-onboarding__step-description">AI 분석 탭에서 저장된 표를 선택해 종합 경영진단을 받으세요.</div>
             </li>
         </ol>
     </section>
