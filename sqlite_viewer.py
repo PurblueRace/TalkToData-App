@@ -110,7 +110,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-AI_ANALYSIS_REPORT_VERSION = 7
+AI_ANALYSIS_REPORT_VERSION = 8
 
 # ============================================
 # 🧰 OpenAI 에러 포맷팅 유틸 (400/401 원인 확인용)
@@ -188,7 +188,7 @@ if os.getenv("OPENAI_BASE_URL") and os.getenv("OPENAI_BASE_URL").strip():
 # ============================================
 # 🤖 OpenAI 모델 (역할별 설정)
 # - SQL 생성: GPT-5.6 Luna / low
-# - 종합 분석: GPT-5.6 Luna / high
+# - 종합 분석: GPT-5.6 Luna / medium
 # - Streamlit Secrets 또는 환경변수에서 역할별로 오버라이드할 수 있습니다.
 # ============================================
 def _read_openai_setting(setting_name: str) -> str | None:
@@ -3417,7 +3417,7 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            reasoning_effort="high",
+            reasoning_effort="medium",
             max_completion_tokens=8000,
         )
         raw_content = response.choices[0].message.content
@@ -3907,7 +3907,7 @@ def render_dashboard_page():
                             "version": AI_ANALYSIS_REPORT_VERSION,
                             "source_count": len(selected_tables),
                             "model": OPENAI_ANALYSIS_MODEL,
-                            "reasoning_effort": "high",
+                            "reasoning_effort": "medium",
                             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                         }
 

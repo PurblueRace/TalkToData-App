@@ -32,7 +32,7 @@ OPENAI_ANALYSIS_MODEL = "gpt-5.6-luna"
 
 `AUTH_REQUIRED = false`이면 로그인 없이 공개 작업공간으로 바로 들어갑니다. 나중에 로그인 기능을 되살릴 때는 Streamlit Secrets에서 `AUTH_REQUIRED = true`로 바꾸면 기존 공개 세션도 다시 로그인 화면으로 전환됩니다.
 
-SQL 생성은 `OPENAI_SQL_MODEL`을 low 추론으로, 종합분석은 `OPENAI_ANALYSIS_MODEL`을 high 추론으로 호출합니다. 역할별 키를 생략하면 두 작업 모두 `gpt-5.6-luna`를 사용합니다.
+SQL 생성은 `OPENAI_SQL_MODEL`을 low 추론으로, 종합분석은 `OPENAI_ANALYSIS_MODEL`을 medium 추론으로 호출합니다. 역할별 키를 생략하면 두 작업 모두 `gpt-5.6-luna`를 사용합니다.
 
 ### 2. 기존 제조업 데이터 확인 및 이전
 
