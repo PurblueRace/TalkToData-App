@@ -23,9 +23,9 @@ from analysis_context import (
     build_analysis_context,
     build_management_analysis_prompts,
     parse_management_report,
-    prepare_analysis_visual_data,
     render_management_report_html,
 )
+from analysis_visuals import prepare_analysis_visual_data
 from app_access import PUBLIC_WORKSPACE_USERNAME, parse_flag
 from query_result import is_effectively_empty_result
 from sql_prompt import (

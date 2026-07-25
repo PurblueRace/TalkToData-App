@@ -8,9 +8,9 @@ from analysis_context import (
     build_analysis_evidence,
     build_management_analysis_prompts,
     parse_management_report,
-    prepare_analysis_visual_data,
     render_management_report_html,
 )
+from analysis_visuals import prepare_analysis_visual_data
 
 
 def _json_text(value: object) -> str:
