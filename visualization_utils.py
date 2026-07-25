@@ -67,6 +67,62 @@ _EXPLICIT_CURRENCY_HINTS = (
     "연봉",
 )
 
+VISUALIZATION_TYPE_LABELS = {
+    "auto": "자동 추천",
+    "bar": "막대 차트",
+    "line": "선 차트",
+    "donut": "도넛 차트",
+    "scatter": "산점도",
+    "distribution": "분포 차트",
+}
+
+MISSING_CATEGORY_LABEL = "미지정"
+
+_NON_ADDITIVE_VISUAL_HINTS = (
+    "가격",
+    "단가",
+    "평균",
+    "비율",
+    "진행률",
+    "마진율",
+    "점수",
+    "표준원가",
+    "잔액",
+    "현재재고",
+    "안전재고",
+)
+_ADDITIVE_VISUAL_HINTS = (
+    "금액",
+    "매출",
+    "매입",
+    "비용",
+    "원가",
+    "수익",
+    "판관비",
+    "예산",
+    "이익",
+    "수량",
+    "건수",
+    "급여",
+    "연봉",
+    "count",
+    "quantity",
+    "amount",
+)
+_DISCRETE_UNIT_LABELS = {
+    "개",
+    "건",
+    "명",
+    "ea",
+    "pcs",
+    "piece",
+    "pieces",
+    "case",
+    "cases",
+    "set",
+    "sets",
+}
+
 
 @dataclass
 class VisualProfile:
@@ -123,7 +179,11 @@ def unit_label(column: object) -> str:
     return ""
 
 
-def format_compact_value(value: object, column: object = "") -> str:
+def format_compact_value(
+    value: object,
+    column: object = "",
+    unit_override: str | None = None,
+) -> str:
     if value is None or pd.isna(value):
         return "-"
 
@@ -133,7 +193,7 @@ def format_compact_value(value: object, column: object = "") -> str:
         return str(value)
 
     kind = unit_kind(column)
-    suffix = unit_label(column)
+    suffix = unit_label(column) if unit_override is None else str(unit_override)
     absolute = abs(number)
 
     if kind == "percent":
@@ -144,6 +204,9 @@ def format_compact_value(value: object, column: object = "") -> str:
         if absolute >= 10_000:
             return f"{number / 10_000:,.0f}만원"
         return f"{number:,.0f}원"
+    if kind == "count" and _normalized(suffix) not in _DISCRETE_UNIT_LABELS:
+        formatted = f"{number:,.3f}".rstrip("0").rstrip(".")
+        return f"{formatted}{suffix}"
     if kind in {"count", "duration"}:
         return f"{number:,.0f}{suffix}"
     if number.is_integer():
@@ -229,6 +292,136 @@ def profile_dataframe(df: pd.DataFrame, question: str = "") -> VisualProfile:
     )
 
     return VisualProfile(frame, time_columns, measure_columns, category_columns)
+
+
+def is_additive_visual_metric(column: object) -> bool:
+    """Return whether summing a metric produces a meaningful composition total."""
+    name = _normalized(column)
+    if any(hint in name for hint in _NON_ADDITIVE_VISUAL_HINTS):
+        return False
+    return any(hint in name for hint in _ADDITIVE_VISUAL_HINTS)
+
+
+def visual_metric_aggregation(column: object) -> str:
+    """Choose a safe aggregation for totals, rates, prices, and snapshots."""
+    name = _normalized(column)
+    if any(keyword in name for keyword in ("현재", "누적", "잔액", "재고")):
+        return "last"
+    if unit_kind(column) == "percent" or not is_additive_visual_metric(column):
+        return "mean"
+    return "sum"
+
+
+def has_mixed_unit_values(profile: VisualProfile) -> bool:
+    for column in profile.frame.columns:
+        if _normalized(column) not in {"단위", "측정단위", "unit"}:
+            continue
+        if profile.frame[column].dropna().astype(str).nunique() > 1:
+            return True
+    return False
+
+
+def profile_unit_label(profile: VisualProfile, column: object) -> str:
+    """Use a table's explicit single unit for quantity and inventory measures."""
+    if unit_kind(column) != "count" or unit_label(column) != "개":
+        return unit_label(column)
+
+    for unit_column in profile.frame.columns:
+        if _normalized(unit_column) not in {"단위", "측정단위", "unit"}:
+            continue
+        values = (
+            profile.frame[unit_column]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+        values = values[values.ne("")].drop_duplicates()
+        if len(values) == 1:
+            return values.iloc[0]
+    return unit_label(column)
+
+
+def visual_number_format(column: object, unit_override: str | None = None) -> str:
+    """Return a Plotly number format that preserves fractional physical quantities."""
+    if unit_kind(column) == "percent":
+        return ".1f"
+    suffix = unit_label(column) if unit_override is None else str(unit_override)
+    if unit_kind(column) == "count" and _normalized(suffix) not in _DISCRETE_UNIT_LABELS:
+        return ",.3f"
+    return ",.0f"
+
+
+def available_visualization_types(df: pd.DataFrame, question: str = "") -> list[str]:
+    """Return chart choices that are meaningful for the selected result table."""
+    if df is None or df.empty:
+        return []
+
+    profile = profile_dataframe(df, question)
+    choices = ["auto"]
+    if len(profile.frame) <= 1 or not profile.measure_columns:
+        return choices
+    if has_mixed_unit_values(profile):
+        return choices
+
+    dimension = (
+        profile.time_columns[0]
+        if profile.time_columns
+        else profile.category_columns[0]
+        if profile.category_columns
+        else None
+    )
+    primary = profile.measure_columns[0]
+    if dimension:
+        dimension_values = profile.frame[[dimension, primary]].replace(
+            [float("inf"), float("-inf")], float("nan")
+        )
+        dimension_values = dimension_values.dropna(subset=[primary])
+        if is_time_column(dimension):
+            dimension_values = dimension_values.dropna(subset=[dimension])
+        else:
+            dimension_values[dimension] = dimension_values[dimension].fillna(
+                MISSING_CATEGORY_LABEL
+            )
+    else:
+        dimension_values = pd.DataFrame()
+    if dimension and dimension_values[dimension].nunique() >= 2:
+        choices.append("bar")
+        if profile.time_columns:
+            choices.append("line")
+
+    if profile.category_columns:
+        category = profile.category_columns[0]
+        metric = profile.measure_columns[0]
+        composition = profile.frame[[category, metric]].replace(
+            [float("inf"), float("-inf")], float("nan")
+        )
+        composition = composition.dropna(subset=[metric])
+        composition[category] = composition[category].fillna(MISSING_CATEGORY_LABEL)
+        if not composition.empty:
+            grouped = composition.groupby(category, dropna=False)[metric].sum(min_count=1)
+            if (
+                is_additive_visual_metric(metric)
+                and visual_metric_aggregation(metric) == "sum"
+                and unit_kind(metric) != "percent"
+                and 2 <= len(grouped) <= 8
+                and (grouped >= 0).all()
+                and grouped.sum() > 0
+            ):
+                choices.append("donut")
+
+    if len(profile.measure_columns) >= 2:
+        pair = profile.frame[profile.measure_columns[:2]].replace(
+            [float("inf"), float("-inf")], float("nan")
+        ).dropna()
+        if len(pair) >= 8 and all(pair[column].nunique() > 1 for column in pair.columns):
+            choices.append("scatter")
+
+    primary_values = profile.frame[profile.measure_columns[0]].replace(
+        [float("inf"), float("-inf")], float("nan")
+    ).dropna()
+    if len(primary_values) >= 10 and primary_values.nunique() > 1:
+        choices.append("distribution")
+    return choices
 
 
 def time_sort_values(series: pd.Series) -> pd.Series:

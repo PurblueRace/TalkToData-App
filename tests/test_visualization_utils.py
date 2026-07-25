@@ -3,13 +3,17 @@ import unittest
 import pandas as pd
 
 from visualization_utils import (
+    available_visualization_types,
     format_compact_value,
     is_composition_question,
     is_correlation_question,
     is_time_series_question,
     profile_dataframe,
+    profile_unit_label,
     time_sort_values,
     unit_kind,
+    visual_number_format,
+    visual_metric_aggregation,
 )
 
 
@@ -73,6 +77,32 @@ class VisualizationUtilsTests(unittest.TestCase):
         self.assertEqual(format_compact_value(37.25, "마진율"), "37.2%")
         self.assertEqual(format_compact_value(1200, "판매수량"), "1,200개")
 
+    def test_visual_aggregation_does_not_sum_prices_or_snapshots(self):
+        self.assertEqual(visual_metric_aggregation("매출액"), "sum")
+        self.assertEqual(visual_metric_aggregation("판매수량"), "sum")
+        self.assertEqual(visual_metric_aggregation("판매가격"), "mean")
+        self.assertEqual(visual_metric_aggregation("표준원가"), "mean")
+        self.assertEqual(visual_metric_aggregation("진행률"), "mean")
+        self.assertEqual(visual_metric_aggregation("현재재고"), "last")
+
+    def test_single_explicit_inventory_unit_overrides_generic_count_label(self):
+        profile = profile_dataframe(
+            pd.DataFrame(
+                {
+                    "원재료명": ["필터", "시약"],
+                    "단위": ["kg", "kg"],
+                    "안전재고": [100, 20],
+                }
+            )
+        )
+
+        self.assertEqual(profile_unit_label(profile, "안전재고"), "kg")
+        self.assertEqual(profile_unit_label(profile, "재고금액"), "원")
+        self.assertEqual(profile_unit_label(profile, "매출건수"), "건")
+        self.assertEqual(format_compact_value(0.025, "사용수량", unit_override="kg"), "0.025kg")
+        self.assertEqual(visual_number_format("사용수량", "kg"), ",.3f")
+        self.assertEqual(visual_number_format("매출건수", "건"), ",.0f")
+
     def test_special_charts_require_explicit_question_intent(self):
         self.assertTrue(is_composition_question("거래처별 매출 비중"))
         self.assertFalse(is_composition_question("거래처별 매출 순위"))
@@ -82,6 +112,103 @@ class VisualizationUtilsTests(unittest.TestCase):
         self.assertTrue(is_time_series_question("월별 재고 추이"))
         self.assertTrue(is_time_series_question("분기별 매출 변화"))
         self.assertFalse(is_time_series_question("현재 재고와 안전재고 비교"))
+
+    def test_available_chart_types_match_the_selected_table_shape(self):
+        monthly = pd.DataFrame(
+            {
+                "기준월": [f"2026년 {month}월" for month in range(1, 13)],
+                "제품명": ["BCM", "CER"] * 6,
+                "매출액": [100 + month * 10 for month in range(12)],
+                "매출원가": [70 + month * 8 for month in range(12)],
+            }
+        )
+
+        choices = available_visualization_types(monthly, "월별 제품 매출 추이")
+
+        self.assertEqual(choices[0], "auto")
+        self.assertIn("bar", choices)
+        self.assertIn("line", choices)
+        self.assertIn("scatter", choices)
+        self.assertIn("distribution", choices)
+
+    def test_donut_requires_a_small_nonnegative_composition(self):
+        composition = pd.DataFrame(
+            {
+                "제품명": ["BCM", "CER", "MAL"],
+                "매출액": [120, 80, 40],
+            }
+        )
+        negative = composition.assign(매출액=[120, -80, 40])
+        prices = composition.rename(columns={"매출액": "판매가격"})
+        with_missing_category = pd.DataFrame(
+            {"제품명": ["BCM", None], "매출액": [120, 40]}
+        )
+        with_infinite_value = pd.DataFrame(
+            {"제품명": ["BCM", "CER"], "매출액": [float("inf"), 40]}
+        )
+        stock_snapshot = pd.DataFrame(
+            {"제품명": ["BCM", "CER"], "재고금액": [120, 40]}
+        )
+        cumulative_sales = pd.DataFrame(
+            {"제품명": ["BCM", "CER"], "누적매출액": [120, 40]}
+        )
+
+        self.assertIn("donut", available_visualization_types(composition))
+        self.assertNotIn("line", available_visualization_types(composition))
+        self.assertNotIn("donut", available_visualization_types(negative))
+        self.assertNotIn("donut", available_visualization_types(prices))
+        self.assertIn("donut", available_visualization_types(with_missing_category))
+        self.assertNotIn("donut", available_visualization_types(with_infinite_value))
+        self.assertNotIn("donut", available_visualization_types(stock_snapshot))
+        self.assertNotIn("donut", available_visualization_types(cumulative_sales))
+
+    def test_small_numeric_samples_do_not_offer_scatter_or_distribution(self):
+        small = pd.DataFrame(
+            {
+                "제품명": ["A", "B", "C"],
+                "매출액": [10, 20, 30],
+                "매출원가": [7, 14, 21],
+            }
+        )
+
+        choices = available_visualization_types(small)
+
+        self.assertNotIn("scatter", choices)
+        self.assertNotIn("distribution", choices)
+
+    def test_mixed_units_and_constant_metrics_hide_unsafe_manual_charts(self):
+        mixed_units = pd.DataFrame(
+            {
+                "원재료명": ["필터", "시약", "용기"],
+                "단위": ["EA", "kg", "L"],
+                "안전재고": [100, 20, 50],
+            }
+        )
+        constants = pd.DataFrame(
+            {
+                "제품명": [f"제품{index}" for index in range(10)],
+                "매출액": [100] * 10,
+                "매출원가": list(range(10)),
+            }
+        )
+
+        self.assertEqual(available_visualization_types(mixed_units), ["auto"])
+        constant_choices = available_visualization_types(constants)
+        self.assertNotIn("scatter", constant_choices)
+        self.assertNotIn("distribution", constant_choices)
+
+    def test_chart_choice_requires_two_non_null_dimension_values(self):
+        sparse = pd.DataFrame(
+            {
+                "제품명": ["A", "B"],
+                "매출액": [10, None],
+            }
+        )
+
+        choices = available_visualization_types(sparse)
+
+        self.assertNotIn("bar", choices)
+        self.assertNotIn("line", choices)
 
 
 if __name__ == "__main__":

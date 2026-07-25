@@ -33,15 +33,23 @@ from sql_prompt import (
     build_sql_user_prompt,
 )
 from visualization_utils import (
+    MISSING_CATEGORY_LABEL,
+    VISUALIZATION_TYPE_LABELS,
+    available_visualization_types,
     format_compact_value,
+    has_mixed_unit_values,
     is_composition_question,
     is_correlation_question,
+    is_additive_visual_metric,
     is_time_column,
     is_time_series_question,
     profile_dataframe,
+    profile_unit_label,
     time_sort_values,
     unit_kind,
     unit_label,
+    visual_number_format,
+    visual_metric_aggregation,
 )
 
 from persistent_db import (
@@ -1875,33 +1883,42 @@ _VIZ_TEXT = "#0F172A"
 _VIZ_SUBTLE_TEXT = "#64748B"
 
 
-def _visual_metric_aggregation(column: str) -> str:
-    name = str(column).lower()
-    if unit_kind(column) == "percent" or any(keyword in name for keyword in ("평균", "단가", "점수", "지수")):
-        return "mean"
-    if any(keyword in name for keyword in ("누적", "잔액", "재고")):
-        return "last"
-    return "sum"
-
-
-def _group_visual_data(frame: pd.DataFrame, dimension: str, metrics: List[str]) -> pd.DataFrame:
-    selected = frame[[dimension, *metrics]].copy()
-    selected = selected.dropna(subset=[dimension])
+def _group_visual_data(
+    frame: pd.DataFrame,
+    dimension: str | List[str],
+    metrics: List[str],
+) -> pd.DataFrame:
+    dimensions = [dimension] if isinstance(dimension, str) else list(dimension)
+    selected = frame[[*dimensions, *metrics]].copy()
+    time_dimensions = [item for item in dimensions if is_time_column(item)]
+    if time_dimensions:
+        selected = selected.dropna(subset=time_dimensions)
+    for category_dimension in set(dimensions) - set(time_dimensions):
+        selected[category_dimension] = selected[category_dimension].fillna(
+            MISSING_CATEGORY_LABEL
+        )
     for metric in metrics:
         selected[metric] = selected[metric].replace([float("inf"), float("-inf")], float("nan"))
     aggregations = {}
     for metric in metrics:
-        aggregation = _visual_metric_aggregation(metric)
-        if aggregation == "sum" or (aggregation == "last" and is_time_column(dimension)):
+        aggregation = visual_metric_aggregation(metric)
+        if aggregation == "sum" or (
+            aggregation == "last" and any(is_time_column(item) for item in dimensions)
+        ):
             aggregations[metric] = lambda values: values.sum(min_count=1)
         else:
             aggregations[metric] = aggregation
-    return selected.groupby(dimension, dropna=False, sort=False, as_index=False).agg(aggregations)
+    return selected.groupby(dimensions, dropna=False, sort=False, as_index=False).agg(aggregations)
 
 
-def _visual_hover_template(axis: str, metric: str, category_axis: str | None = None) -> str:
-    number_format = ".1f" if unit_kind(metric) == "percent" else ",.0f"
-    suffix = unit_label(metric)
+def _visual_hover_template(
+    axis: str,
+    metric: str,
+    category_axis: str | None = None,
+    suffix: str | None = None,
+) -> str:
+    suffix = unit_label(metric) if suffix is None else suffix
+    number_format = visual_number_format(metric, suffix)
     category_line = f"<b>%{{{category_axis}}}</b><br>" if category_axis else ""
     return f"{category_line}{metric}: %{{{axis}:{number_format}}}{suffix}<extra></extra>"
 
@@ -1981,7 +1998,7 @@ def _latest_snapshot_rows(profile, metrics: List[str]) -> pd.DataFrame:
     selected = profile.frame[list(dict.fromkeys(columns))].copy()
 
     if category:
-        selected = selected.dropna(subset=[category])
+        selected[category] = selected[category].fillna(MISSING_CATEGORY_LABEL)
     if time_column:
         selected = selected.dropna(subset=[time_column])
         selected["__sort"] = time_sort_values(selected[time_column])
@@ -2003,6 +2020,14 @@ def _latest_snapshot_rows(profile, metrics: List[str]) -> pd.DataFrame:
 def create_visual_kpis(df: pd.DataFrame, user_question: str) -> List[Dict[str, str]]:
     """Create concise KPI cards that match the selected measures."""
     profile = profile_dataframe(df, user_question)
+    if has_mixed_unit_values(profile):
+        return [
+            {
+                "label": "분석 데이터",
+                "value": f"{len(df):,}행",
+                "detail": "단위가 달라 합계 KPI는 표시하지 않습니다.",
+            }
+        ]
     kpis: List[Dict[str, str]] = []
 
     for metric in profile.measure_columns[:3]:
@@ -2012,10 +2037,10 @@ def create_visual_kpis(df: pd.DataFrame, user_question: str) -> List[Dict[str, s
         if len(profile.frame) == 1:
             value = values.iloc[0]
             label = metric
-        elif _visual_metric_aggregation(metric) == "sum":
+        elif visual_metric_aggregation(metric) == "sum":
             value = values.sum()
             label = f"합계 {metric}"
-        elif _visual_metric_aggregation(metric) == "last":
+        elif visual_metric_aggregation(metric) == "last":
             snapshot_values = _latest_snapshot_rows(profile, [metric])[metric].dropna()
             if snapshot_values.empty:
                 continue
@@ -2024,12 +2049,22 @@ def create_visual_kpis(df: pd.DataFrame, user_question: str) -> List[Dict[str, s
         else:
             value = values.mean()
             label = f"평균 {metric}"
-        kpis.append({"label": label, "value": format_compact_value(value, metric), "detail": ""})
+        kpis.append(
+            {
+                "label": label,
+                "value": format_compact_value(
+                    value,
+                    metric,
+                    unit_override=profile_unit_label(profile, metric),
+                ),
+                "detail": "",
+            }
+        )
 
     if profile.category_columns and profile.measure_columns and len(kpis) < 4:
         category = profile.category_columns[0]
         metric = profile.measure_columns[0]
-        if _visual_metric_aggregation(metric) == "last":
+        if visual_metric_aggregation(metric) == "last":
             grouped = _latest_snapshot_rows(profile, [metric])[[category, metric]].dropna(subset=[metric])
         else:
             grouped = _group_visual_data(profile.frame, category, [metric]).dropna(subset=[metric])
@@ -2039,7 +2074,7 @@ def create_visual_kpis(df: pd.DataFrame, user_question: str) -> List[Dict[str, s
                 {
                     "label": f"최고 {category}",
                     "value": str(top_row[category]),
-                    "detail": f"{metric} {format_compact_value(top_row[metric], metric)}",
+                    "detail": f"{metric} {format_compact_value(top_row[metric], metric, unit_override=profile_unit_label(profile, metric))}",
                 }
             )
 
@@ -2069,8 +2104,10 @@ def _create_correlation_chart(profile, user_question: str):
         if len(pair) < 8:
             return None
         coefficient = pair[x_metric].corr(pair[y_metric])
-        x_format = ".1f" if unit_kind(x_metric) == "percent" else ",.0f"
-        y_format = ".1f" if unit_kind(y_metric) == "percent" else ",.0f"
+        x_suffix = profile_unit_label(profile, x_metric)
+        y_suffix = profile_unit_label(profile, y_metric)
+        x_format = visual_number_format(x_metric, x_suffix)
+        y_format = visual_number_format(y_metric, y_suffix)
         fig = go.Figure(
             go.Scatter(
                 x=pair[x_metric],
@@ -2083,8 +2120,8 @@ def _create_correlation_chart(profile, user_question: str):
                     "line": {"color": "#FFFFFF", "width": 1},
                 },
                 hovertemplate=(
-                    f"{x_metric}: %{{x:{x_format}}}{unit_label(x_metric)}<br>"
-                    f"{y_metric}: %{{y:{y_format}}}{unit_label(y_metric)}<extra></extra>"
+                    f"{x_metric}: %{{x:{x_format}}}{x_suffix}<br>"
+                    f"{y_metric}: %{{y:{y_format}}}{y_suffix}<extra></extra>"
                 ),
             )
         )
@@ -2097,10 +2134,10 @@ def _create_correlation_chart(profile, user_question: str):
         fig.update_xaxes(
             title_text=x_metric,
             tickformat=x_format,
-            ticksuffix=unit_label(x_metric),
+            ticksuffix=x_suffix,
             showgrid=True,
         )
-        fig.update_yaxes(title_text=y_metric, tickformat=y_format, ticksuffix=unit_label(y_metric))
+        fig.update_yaxes(title_text=y_metric, tickformat=y_format, ticksuffix=y_suffix)
         return {
             "kind": "correlation",
             "figure": fig,
@@ -2147,7 +2184,7 @@ def _create_time_chart(profile):
     primary = profile.measure_columns[0]
     metrics = [primary]
     for candidate in profile.measure_columns[1:]:
-        if unit_kind(candidate) == unit_kind(primary):
+        if profile_unit_label(profile, candidate) == profile_unit_label(profile, primary):
             metrics.append(candidate)
             break
 
@@ -2177,10 +2214,17 @@ def _create_time_chart(profile):
                 name=metric,
                 line={"width": 2.6, "color": palette[index], "shape": "linear"},
                 marker={"size": 6, "color": palette[index], "line": {"color": "#FFFFFF", "width": 1.5}},
-                text=[format_compact_value(value, metric) for value in grouped[metric]] if show_text else None,
+                text=[
+                    format_compact_value(
+                        value,
+                        metric,
+                        unit_override=profile_unit_label(profile, metric),
+                    )
+                    for value in grouped[metric]
+                ] if show_text else None,
                 textposition="top center",
                 hovertemplate=(
-                    f"<b>%{{x}}</b><br>{_visual_hover_template('y', metric)}"
+                    f"<b>%{{x}}</b><br>{_visual_hover_template('y', metric, suffix=profile_unit_label(profile, metric))}"
                 ),
             )
         )
@@ -2188,14 +2232,346 @@ def _create_time_chart(profile):
     title = f"{primary} 추이" if len(metrics) == 1 else "주요 지표 추이"
     subtitle = f"{dimension} 기준 · {len(grouped):,}개 구간"
     _apply_visual_style(fig, title, subtitle, show_legend=len(metrics) > 1)
-    suffix = unit_label(primary)
-    fig.update_yaxes(title_text="", tickformat=".1f" if unit_kind(primary) == "percent" else ",.0f", ticksuffix=suffix)
+    suffix = profile_unit_label(profile, primary)
+    fig.update_yaxes(
+        title_text="",
+        tickformat=visual_number_format(primary, suffix),
+        ticksuffix=suffix,
+    )
     fig.update_xaxes(title_text="", tickangle=-25 if len(grouped) > 12 else 0, showgrid=False)
     return {
         "kind": "trend",
         "figure": fig,
         "note": f"{dimension} 순서로 정렬해 변화 방향을 보여줍니다.",
     }
+
+
+def _manual_chart_dimension(profile) -> tuple[str | None, bool]:
+    if profile.time_columns:
+        return profile.time_columns[0], True
+    if profile.category_columns:
+        return profile.category_columns[0], False
+    return None, False
+
+
+def _manual_chart_metrics(profile, limit: int = 2) -> List[str]:
+    if not profile.measure_columns:
+        return []
+    primary = profile.measure_columns[0]
+    metrics = [primary]
+    for candidate in profile.measure_columns[1:]:
+        if profile_unit_label(profile, candidate) == profile_unit_label(profile, primary):
+            metrics.append(candidate)
+        if len(metrics) >= limit:
+            break
+    return metrics
+
+
+def _manual_series_category(profile, *, is_time: bool) -> str | None:
+    if not is_time or not profile.category_columns:
+        return None
+    category = profile.category_columns[0]
+    category_count = profile.frame[category].fillna(MISSING_CATEGORY_LABEL).nunique()
+    return category if 2 <= category_count <= 6 else None
+
+
+def _sample_visual_rows(frame: pd.DataFrame, limit: int = 60) -> pd.DataFrame:
+    if len(frame) <= limit:
+        return frame
+    positions = sorted(
+        {
+            round(index * (len(frame) - 1) / (limit - 1))
+            for index in range(limit)
+        }
+    )
+    return frame.iloc[positions]
+
+
+def _create_manual_bar_chart(profile):
+    dimension, is_time = _manual_chart_dimension(profile)
+    metrics = _manual_chart_metrics(profile)
+    if not dimension or not metrics:
+        return None
+
+    series_category = _manual_series_category(profile, is_time=is_time)
+    if series_category:
+        metrics = metrics[:1]
+    group_dimensions = [dimension, series_category] if series_category else dimension
+
+    grouped = _group_visual_data(profile.frame, group_dimensions, metrics).dropna(
+        subset=[metrics[0]]
+    )
+    if len(grouped) < 2:
+        return None
+    if is_time:
+        grouped["__sort"] = time_sort_values(grouped[dimension])
+        grouped = grouped.sort_values("__sort")
+        latest_periods = grouped[[dimension, "__sort"]].drop_duplicates().tail(36)[dimension]
+        grouped = grouped[grouped[dimension].isin(latest_periods)].drop(columns="__sort")
+    else:
+        grouped["__rank"] = grouped[metrics[0]].abs()
+        grouped = grouped.nlargest(12, "__rank").sort_values(metrics[0]).drop(columns="__rank")
+
+    fig = go.Figure()
+    palette = [_VIZ_PRIMARY, _VIZ_SECONDARY, "#7C3AED", "#D97706", "#0891B2", "#DB2777"]
+    show_text = len(metrics) == 1 and len(grouped) <= 12
+    if series_category:
+        series_items = [
+            (str(category_value), grouped[grouped[series_category] == category_value], metrics[0])
+            for category_value in grouped[series_category].drop_duplicates()
+        ]
+    else:
+        series_items = [
+            (metric, grouped, metric)
+            for metric in metrics
+        ]
+    for index, (series_name, series_frame, metric) in enumerate(series_items):
+        common = {
+            "name": series_name,
+            "marker": {"color": palette[index], "line": {"width": 0}},
+            "text": [
+                format_compact_value(
+                    value,
+                    metric,
+                    unit_override=profile_unit_label(profile, metric),
+                )
+                for value in series_frame[metric]
+            ] if show_text else None,
+            "textposition": "outside" if show_text else None,
+        }
+        if is_time:
+            fig.add_trace(
+                go.Bar(
+                    x=series_frame[dimension],
+                    y=series_frame[metric],
+                    hovertemplate=f"<b>%{{x}}</b><br>{_visual_hover_template('y', metric, suffix=profile_unit_label(profile, metric))}",
+                    **common,
+                )
+            )
+        else:
+            fig.add_trace(
+                go.Bar(
+                    x=grouped[metric],
+                    y=grouped[dimension].astype(str),
+                    orientation="h",
+                    hovertemplate=_visual_hover_template(
+                        "x",
+                        metric,
+                        "y",
+                        suffix=profile_unit_label(profile, metric),
+                    ),
+                    **common,
+                )
+            )
+
+    height = 430 if is_time else min(560, max(390, 175 + len(grouped) * 29))
+    _apply_visual_style(
+        fig,
+        f"{dimension} 기준 막대 차트",
+        (
+            f"{series_category}별 {metrics[0]} 비교"
+            if series_category
+            else f"{', '.join(metrics)} 비교 · 최대 {len(grouped):,}개 항목"
+        ),
+        height=height,
+        horizontal=not is_time,
+        show_legend=len(series_items) > 1,
+    )
+    fig.update_layout(barmode="group", hovermode="closest" if not is_time else "x unified")
+    number_format = visual_number_format(
+        metrics[0],
+        profile_unit_label(profile, metrics[0]),
+    )
+    if is_time:
+        fig.update_xaxes(title_text="", tickangle=-25 if len(grouped) > 12 else 0, showgrid=False)
+        fig.update_yaxes(
+            title_text="",
+            tickformat=number_format,
+            ticksuffix=profile_unit_label(profile, metrics[0]),
+        )
+    else:
+        fig.update_xaxes(
+            title_text="",
+            tickformat=number_format,
+            ticksuffix=profile_unit_label(profile, metrics[0]),
+        )
+        fig.update_yaxes(title_text="", showgrid=False)
+    return {
+        "kind": "bar",
+        "figure": fig,
+        "note": (
+            f"{series_category}별 계열을 나눠 항목 간 크기를 비교합니다."
+            if series_category
+            else "항목 간 크기 비교에 적합한 막대 차트입니다."
+        ),
+    }
+
+
+def _create_manual_line_chart(profile):
+    dimension, is_time = _manual_chart_dimension(profile)
+    metrics = _manual_chart_metrics(profile)
+    if not dimension or not is_time or not metrics:
+        return None
+
+    series_category = _manual_series_category(profile, is_time=is_time)
+    if series_category:
+        metrics = metrics[:1]
+    group_dimensions = [dimension, series_category] if series_category else dimension
+
+    grouped = _group_visual_data(profile.frame, group_dimensions, metrics).dropna(
+        subset=[metrics[0]]
+    )
+    if len(grouped) < 2:
+        return None
+    if is_time:
+        grouped["__sort"] = time_sort_values(grouped[dimension])
+        grouped = grouped.sort_values("__sort").drop(columns="__sort")
+
+    fig = go.Figure()
+    palette = [_VIZ_PRIMARY, _VIZ_SECONDARY, "#7C3AED", "#D97706", "#0891B2", "#DB2777"]
+    if series_category:
+        series_items = [
+            (
+                str(category_value),
+                _sample_visual_rows(grouped[grouped[series_category] == category_value]),
+                metrics[0],
+            )
+            for category_value in grouped[series_category].drop_duplicates()
+        ]
+    else:
+        sampled = _sample_visual_rows(grouped)
+        series_items = [(metric, sampled, metric) for metric in metrics]
+    for index, (series_name, series_frame, metric) in enumerate(series_items):
+        fig.add_trace(
+            go.Scatter(
+                x=series_frame[dimension],
+                y=series_frame[metric],
+                mode="lines+markers" if len(series_frame) <= 36 else "lines",
+                name=series_name,
+                line={"width": 2.6, "color": palette[index], "shape": "linear"},
+                marker={"size": 6, "color": palette[index], "line": {"color": "#FFFFFF", "width": 1.5}},
+                hovertemplate=f"<b>%{{x}}</b><br>{_visual_hover_template('y', metric, suffix=profile_unit_label(profile, metric))}",
+            )
+        )
+
+    subtitle = (
+        f"{series_category}별 {metrics[0]} 변화"
+        if series_category
+        else f"{dimension} 시간 순서에 따른 변화"
+    )
+    _apply_visual_style(
+        fig,
+        f"{dimension} 기준 선 차트",
+        subtitle,
+        show_legend=len(series_items) > 1,
+    )
+    fig.update_xaxes(title_text="", tickangle=-25 if len(grouped) > 12 else 0, showgrid=False)
+    number_format = visual_number_format(
+        metrics[0],
+        profile_unit_label(profile, metrics[0]),
+    )
+    fig.update_yaxes(
+        title_text="",
+        tickformat=number_format,
+        ticksuffix=profile_unit_label(profile, metrics[0]),
+    )
+    return {
+        "kind": "line",
+        "figure": fig,
+        "note": "시간 흐름에 따른 추세를 확인하는 선 차트입니다.",
+    }
+
+
+def _create_manual_donut_chart(profile):
+    if not profile.category_columns or not profile.measure_columns:
+        return None
+    category = profile.category_columns[0]
+    metric = profile.measure_columns[0]
+    grouped = _group_visual_data(profile.frame, category, [metric]).dropna(subset=[metric])
+    if (
+        not is_additive_visual_metric(metric)
+        or visual_metric_aggregation(metric) != "sum"
+        or unit_kind(metric) == "percent"
+        or not 2 <= len(grouped) <= 8
+        or (grouped[metric] < 0).any()
+        or grouped[metric].sum() <= 0
+    ):
+        return None
+    grouped = grouped.sort_values(metric, ascending=False)
+    metric_suffix = profile_unit_label(profile, metric)
+    metric_format = visual_number_format(metric, metric_suffix)
+    fig = go.Figure(
+        go.Pie(
+            labels=grouped[category].astype(str),
+            values=grouped[metric],
+            hole=0.62,
+            sort=False,
+            marker={
+                "colors": [
+                    _VIZ_PRIMARY,
+                    _VIZ_SECONDARY,
+                    "#7C3AED",
+                    "#D97706",
+                    "#0891B2",
+                    _VIZ_MUTED,
+                    "#DB2777",
+                    "#65A30D",
+                ],
+                "line": {"color": "#FFFFFF", "width": 3},
+            },
+            textinfo="label+percent",
+            textposition="outside",
+            hovertemplate=f"<b>%{{label}}</b><br>{metric}: %{{value:{metric_format}}}{metric_suffix}<br>비중 %{{percent}}<extra></extra>",
+        )
+    )
+    _apply_visual_style(fig, f"{category}별 {metric} 구성", "전체에서 각 항목이 차지하는 비중입니다.", show_legend=False)
+    fig.update_layout(hovermode="closest", margin={"l": 24, "r": 24, "t": 88, "b": 38})
+    return {"kind": "donut", "figure": fig, "note": "2~8개 항목의 구성비를 비교합니다."}
+
+
+def _create_manual_scatter_chart(profile):
+    if len(profile.measure_columns) < 2:
+        return None
+    x_metric, y_metric = profile.measure_columns[:2]
+    category = profile.category_columns[0] if profile.category_columns else None
+    columns = [x_metric, y_metric, *([category] if category else [])]
+    pair = profile.frame[columns].replace([float("inf"), float("-inf")], float("nan")).dropna(
+        subset=[x_metric, y_metric]
+    )
+    if len(pair) < 8:
+        return None
+    if pair[x_metric].nunique() <= 1 or pair[y_metric].nunique() <= 1:
+        return None
+    coefficient = pair[x_metric].corr(pair[y_metric])
+    customdata = (
+        pair[category].fillna(MISSING_CATEGORY_LABEL).astype(str)
+        if category
+        else None
+    )
+    category_line = "<b>%{customdata}</b><br>" if category else ""
+    x_suffix = profile_unit_label(profile, x_metric)
+    y_suffix = profile_unit_label(profile, y_metric)
+    x_format = visual_number_format(x_metric, x_suffix)
+    y_format = visual_number_format(y_metric, y_suffix)
+    fig = go.Figure(
+        go.Scatter(
+            x=pair[x_metric],
+            y=pair[y_metric],
+            mode="markers",
+            customdata=customdata,
+            marker={"size": 9, "color": _VIZ_PRIMARY, "opacity": 0.72, "line": {"color": "#FFFFFF", "width": 1}},
+            hovertemplate=(
+                f"{category_line}{x_metric}: %{{x:{x_format}}}{x_suffix}<br>"
+                f"{y_metric}: %{{y:{y_format}}}{y_suffix}<extra></extra>"
+            ),
+        )
+    )
+    coefficient_text = f"상관계수 {coefficient:.2f}" if pd.notna(coefficient) else "상관계수 계산 불가"
+    _apply_visual_style(fig, f"{x_metric}와 {y_metric}", f"{coefficient_text} · 점 하나가 데이터 한 행입니다.")
+    fig.update_layout(hovermode="closest")
+    fig.update_xaxes(title_text=x_metric, tickformat=x_format, ticksuffix=x_suffix, showgrid=True)
+    fig.update_yaxes(title_text=y_metric, tickformat=y_format, ticksuffix=y_suffix)
+    return {"kind": "scatter", "figure": fig, "note": "두 지표의 관계를 확인하되 상관관계를 원인으로 해석하지 않습니다."}
 
 
 def _find_metric(measures: List[str], required_keywords: tuple[str, ...]) -> str | None:
@@ -2259,7 +2635,12 @@ def _create_benchmark_chart(profile):
             y=grouped[category].astype(str),
             orientation="h",
             marker={"color": actual_colors, "line": {"width": 0}},
-            hovertemplate=_visual_hover_template("x", actual_metric, "y"),
+            hovertemplate=_visual_hover_template(
+                "x",
+                actual_metric,
+                "y",
+                suffix=profile_unit_label(profile, actual_metric),
+            ),
         )
     )
     fig.add_trace(
@@ -2269,13 +2650,22 @@ def _create_benchmark_chart(profile):
             y=grouped[category].astype(str),
             orientation="h",
             marker={"color": "#CBD5E1", "line": {"width": 0}},
-            hovertemplate=_visual_hover_template("x", benchmark_metric, "y"),
+            hovertemplate=_visual_hover_template(
+                "x",
+                benchmark_metric,
+                "y",
+                suffix=profile_unit_label(profile, benchmark_metric),
+            ),
         )
     )
     height = min(520, max(380, 170 + len(grouped) * 27))
     _apply_visual_style(fig, title, subtitle, height=height, horizontal=True, show_legend=True)
     fig.update_layout(barmode="group", hovermode="closest")
-    fig.update_xaxes(title_text=unit_label(actual_metric), tickformat=",.0f")
+    actual_suffix = profile_unit_label(profile, actual_metric)
+    fig.update_xaxes(
+        title_text=actual_suffix,
+        tickformat=visual_number_format(actual_metric, actual_suffix),
+    )
     fig.update_yaxes(title_text="", showgrid=False)
     return {"kind": "benchmark", "figure": fig, "note": subtitle}
 
@@ -2293,11 +2683,14 @@ def _create_category_chart(profile, user_question: str):
     if (
         is_composition_question(user_question)
         and 2 <= len(grouped) <= 6
-        and _visual_metric_aggregation(metric) == "sum"
+        and is_additive_visual_metric(metric)
+        and visual_metric_aggregation(metric) == "sum"
         and (grouped[metric] >= 0).all()
         and grouped[metric].sum() > 0
     ):
         grouped = grouped.sort_values(metric, ascending=False)
+        metric_suffix = profile_unit_label(profile, metric)
+        metric_format = visual_number_format(metric, metric_suffix)
         fig = go.Figure(
             data=go.Pie(
                 labels=grouped[category].astype(str),
@@ -2312,7 +2705,7 @@ def _create_category_chart(profile, user_question: str):
                 textinfo="percent",
                 textposition="inside",
                 insidetextfont={"color": "#FFFFFF", "size": 12},
-                hovertemplate=f"<b>%{{label}}</b><br>{metric}: %{{value:,.0f}}{unit_label(metric)}<br>비중 %{{percent}}<extra></extra>",
+                hovertemplate=f"<b>%{{label}}</b><br>{metric}: %{{value:{metric_format}}}{metric_suffix}<br>비중 %{{percent}}<extra></extra>",
             )
         )
         _apply_visual_style(
@@ -2345,10 +2738,22 @@ def _create_category_chart(profile, user_question: str):
             y=grouped[category].astype(str),
             orientation="h",
             marker={"color": colors, "line": {"width": 0}},
-            text=[format_compact_value(value, metric) for value in grouped[metric]],
+            text=[
+                format_compact_value(
+                    value,
+                    metric,
+                    unit_override=profile_unit_label(profile, metric),
+                )
+                for value in grouped[metric]
+            ],
             textposition="outside",
             cliponaxis=False,
-            hovertemplate=_visual_hover_template("x", metric, "y"),
+            hovertemplate=_visual_hover_template(
+                "x",
+                metric,
+                "y",
+                suffix=profile_unit_label(profile, metric),
+            ),
         )
     )
     height = min(520, max(380, 170 + len(grouped) * 27))
@@ -2362,8 +2767,11 @@ def _create_category_chart(profile, user_question: str):
     fig.update_layout(hovermode="closest")
     fig.update_xaxes(
         title_text="",
-        tickformat=".1f" if unit_kind(metric) == "percent" else ",.0f",
-        ticksuffix=unit_label(metric),
+        tickformat=visual_number_format(
+            metric,
+            profile_unit_label(profile, metric),
+        ),
+        ticksuffix=profile_unit_label(profile, metric),
     )
     fig.update_yaxes(title_text="", showgrid=False)
     return {"kind": "ranking", "figure": fig, "note": "긴 항목명도 바로 비교할 수 있도록 큰 값이 위에 오게 정렬했습니다."}
@@ -2374,42 +2782,66 @@ def _create_distribution_chart(profile):
         return None
     metric = profile.measure_columns[0]
     values = profile.frame[metric].replace([float("inf"), float("-inf")], float("nan")).dropna()
-    if len(values) < 2:
+    if len(values) < 2 or values.nunique() <= 1:
         return None
 
     bins = min(24, max(8, int(len(values) ** 0.5)))
+    metric_suffix = profile_unit_label(profile, metric)
+    metric_format = visual_number_format(metric, metric_suffix)
     fig = go.Figure(
         go.Histogram(
             x=values,
             nbinsx=bins,
             marker={"color": _VIZ_PRIMARY, "line": {"color": "#FFFFFF", "width": 1}},
-            hovertemplate=f"{metric}: %{{x:,.0f}}{unit_label(metric)}<br>빈도 %{{y:,}}건<extra></extra>",
+            hovertemplate=f"{metric}: %{{x:{metric_format}}}{metric_suffix}<br>빈도 %{{y:,}}건<extra></extra>",
         )
     )
     _apply_visual_style(fig, f"{metric} 분포", f"{len(values):,}개 값이 어느 구간에 모여 있는지 보여줍니다.")
     fig.update_layout(hovermode="closest")
-    fig.update_xaxes(title_text="", tickformat=",.0f", ticksuffix=unit_label(metric))
+    fig.update_xaxes(
+        title_text="",
+        tickformat=metric_format,
+        ticksuffix=metric_suffix,
+    )
     fig.update_yaxes(title_text="빈도(건)", tickformat=",.0f")
     return {"kind": "distribution", "figure": fig, "note": "막대가 높을수록 해당 값 구간의 데이터가 많습니다."}
 
 
-def create_visualizations(df: pd.DataFrame, user_question: str):
-    """Build one intent-aware, presentation-ready chart for the current result."""
+def create_visualizations(
+    df: pd.DataFrame,
+    user_question: str,
+    chart_type: str = "auto",
+):
+    """Build one presentation-ready chart for the selected result and chart type."""
     if df is None or df.empty:
         return []
 
     profile = profile_dataframe(df, user_question)
+    if has_mixed_unit_values(profile):
+        return []
     if not profile.measure_columns:
         return []
     if len(profile.frame) <= 1:
         return []
+
+    if chart_type != "auto":
+        manual_factories = {
+            "bar": _create_manual_bar_chart,
+            "line": _create_manual_line_chart,
+            "donut": _create_manual_donut_chart,
+            "scatter": _create_manual_scatter_chart,
+            "distribution": _create_distribution_chart,
+        }
+        factory = manual_factories.get(chart_type)
+        chart = factory(profile) if factory else None
+        return [chart] if chart else []
 
     correlation_chart = _create_correlation_chart(profile, user_question)
     if correlation_chart:
         return [correlation_chart]
 
     if is_time_series_question(user_question):
-        time_chart = _create_time_chart(profile)
+        time_chart = _create_manual_line_chart(profile)
         if time_chart:
             return [time_chart]
 
@@ -2417,7 +2849,7 @@ def create_visualizations(df: pd.DataFrame, user_question: str):
     if benchmark_chart:
         return [benchmark_chart]
 
-    time_chart = _create_time_chart(profile)
+    time_chart = _create_manual_line_chart(profile)
     if time_chart:
         return [time_chart]
 
@@ -3195,6 +3627,8 @@ def render_dashboard_page():
                                 st.session_state.pop('ai_analysis_sources', None)
                                 st.session_state.pop('ai_analysis_report', None)
                                 st.session_state.pop('ai_analysis_report_meta', None)
+                                st.session_state.pop('visualization_source', None)
+                                st.session_state.pop('visualization_chart_type', None)
                                 st.rerun()
                             else:
                                 st.error("저장 데이터를 영구 삭제하지 못했습니다. 기존 보관함은 그대로 유지됩니다.")
@@ -3308,14 +3742,87 @@ def render_dashboard_page():
     
     # [탭 3] 시각화
     with tab_visualization:
-        if current_sql_query and not current_df.empty:
-            render_dashboard_section_header(
-                "시각화",
-                "질문의 의도와 데이터 단위를 분석해 가장 읽기 쉬운 형태로 정리했습니다.",
-                f"{len(current_df):,}행",
+        visualization_source_options = [
+            f"saved:{index}" for index in range(len(st.session_state.saved_tables))
+        ]
+        if not visualization_source_options and current_sql_query and not current_df.empty:
+            visualization_source_options.append("current")
+
+        render_dashboard_section_header(
+            "시각화",
+            "저장된 표를 선택하고 데이터에 맞는 차트 형태를 직접 고를 수 있습니다.",
+            f"{len(visualization_source_options)}개 표" if visualization_source_options else "",
+        )
+
+        if visualization_source_options:
+            def format_visualization_source(source_key: str) -> str:
+                if source_key == "current":
+                    title = str(current_question or "현재 SQL 결과").strip()
+                    frame = current_df
+                    prefix = "현재 결과"
+                else:
+                    source_index = int(source_key.split(":", 1)[1])
+                    item = st.session_state.saved_tables[source_index]
+                    title = str(item.get("query") or "제목 없는 저장 표").strip()
+                    frame = item.get("data", pd.DataFrame())
+                    prefix = f"저장 표 {source_index + 1}"
+                if len(title) > 46:
+                    title = f"{title[:45]}…"
+                return f"{prefix} · {title} · {len(frame):,}행 × {len(frame.columns):,}열"
+
+            selected_source_state = st.session_state.get("visualization_source")
+            if selected_source_state not in visualization_source_options:
+                st.session_state.pop("visualization_source", None)
+            default_source_index = (
+                len(st.session_state.saved_tables) - 1
+                if st.session_state.saved_tables
+                else 0
             )
 
-            visual_kpis = create_visual_kpis(current_df, current_question)
+            with st.container(border=True, key="visualization_workspace"):
+                source_column, chart_column = st.columns([1.65, 1], gap="medium")
+                with source_column:
+                    selected_visualization_source = st.selectbox(
+                        "시각화할 표",
+                        options=visualization_source_options,
+                        index=default_source_index,
+                        format_func=format_visualization_source,
+                        key="visualization_source",
+                    )
+
+                if selected_visualization_source == "current":
+                    visual_df = current_df
+                    visual_question = current_question
+                    visual_source_label = "현재 SQL 결과"
+                else:
+                    visual_source_index = int(selected_visualization_source.split(":", 1)[1])
+                    visual_item = st.session_state.saved_tables[visual_source_index]
+                    visual_df = visual_item.get("data", pd.DataFrame())
+                    visual_question = str(visual_item.get("query") or "")
+                    visual_source_label = f"저장 표 {visual_source_index + 1}"
+
+                available_chart_types = available_visualization_types(
+                    visual_df,
+                    visual_question,
+                ) or ["auto"]
+                selected_chart_state = st.session_state.get("visualization_chart_type")
+                if selected_chart_state not in available_chart_types:
+                    st.session_state.pop("visualization_chart_type", None)
+                with chart_column:
+                    selected_chart_type = st.selectbox(
+                        "차트 형태",
+                        options=available_chart_types,
+                        format_func=lambda value: VISUALIZATION_TYPE_LABELS[value],
+                        key="visualization_chart_type",
+                        help="선택한 표의 열 구성에 맞는 차트만 표시됩니다.",
+                    )
+
+                st.caption(
+                    f"{visual_source_label} · {len(visual_df):,}행 × {len(visual_df.columns):,}열 · "
+                    "막대와 선 외에도 조건이 맞으면 도넛·산점도·분포 차트를 선택할 수 있습니다."
+                )
+
+            visual_kpis = create_visual_kpis(visual_df, visual_question)
             if visual_kpis:
                 kpi_columns = st.columns(len(visual_kpis), gap="small")
                 for column, kpi in zip(kpi_columns, visual_kpis):
@@ -3340,10 +3847,15 @@ def render_dashboard_page():
                                 unsafe_allow_html=True,
                             )
 
-            charts = create_visualizations(current_df, current_question)
+            charts = create_visualizations(
+                visual_df,
+                visual_question,
+                chart_type=selected_chart_type,
+            )
             if charts:
                 st.markdown(
-                    "<div style='font-size:13px;font-weight:600;color:#344054;margin:8px 0 10px;'>추천 차트</div>",
+                    f"<div style='font-size:13px;font-weight:600;color:#344054;margin:8px 0 10px;'>"
+                    f"{html.escape(VISUALIZATION_TYPE_LABELS[selected_chart_type])}</div>",
                     unsafe_allow_html=True,
                 )
                 for chart in charts:
@@ -3362,11 +3874,14 @@ def render_dashboard_page():
                         if chart.get("note"):
                             st.caption(chart["note"])
             else:
-                st.caption("단일 결과는 불필요한 차트 대신 핵심 수치로 표시했습니다.")
+                st.caption(
+                    "선택한 표에서 이 차트를 만들 수 있는 열을 찾지 못했습니다. "
+                    "다른 차트 형태나 다른 저장 표를 선택해 주세요."
+                )
         else:
             render_dashboard_empty_state(
-                "시각화할 질문을 입력하세요",
-                "분석 결과에 차트로 표현할 수 있는 데이터가 있으면 이 영역에 자동으로 표시됩니다."
+                "시각화할 표를 저장해 주세요",
+                "SQL 결과를 저장하면 이곳에서 표와 차트 형태를 선택할 수 있습니다."
             )
     
     # 검색 실행
