@@ -92,6 +92,12 @@ class AnalysisEvidenceTests(unittest.TestCase):
         evidence = build_analysis_evidence([sales, receivables])
         relationship_text = _json_text(evidence["relationships"])
 
+        self.assertEqual(
+            [dataset["dataset_id"] for dataset in evidence["datasets"]],
+            ["표1", "표2"],
+        )
+        self.assertEqual(evidence["relationships"][0]["left_dataset"], "표1")
+        self.assertEqual(evidence["relationships"][0]["right_dataset"], "표2")
         self.assertIn("거래처코드", relationship_text)
         self.assertIn("C002", relationship_text)
         self.assertNotIn("매출액", relationship_text)
@@ -349,6 +355,9 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         self.assertIn("모든 주요 섹션", user_prompt)
         self.assertIn("2열 배치를 사용하지 않는다", user_prompt)
         self.assertIn("근거가 부족한 섹션의 한계 안내", system_prompt)
+        self.assertIn("표 번호(표1, 표2, 표3...)", system_prompt)
+        self.assertIn("D1 같은 영문형 식별자 대신 표1 형식", system_prompt)
+        self.assertIn("실제 데이터 값에 포함된 D1은 변경하지 않는다", system_prompt)
         self.assertIn('"표 간 관계와 비교 가능성" 및 "리스크와 기회"', system_prompt)
         self.assertNotIn('4. "표 간 관계와 비교 가능성"', user_prompt)
         self.assertNotIn('"리스크와 기회" data-table', user_prompt)

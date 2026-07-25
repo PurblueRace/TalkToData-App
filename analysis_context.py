@@ -563,7 +563,7 @@ def _profile_dataset(item: Mapping[str, Any], index: int, *, row_budget: int) ->
 
     sql = _clip_text(_redact_lineage_text(raw_sql, sensitive_values), 6_000)
     return {
-        "dataset_id": f"D{index + 1}",
+        "dataset_id": f"표{index + 1}",
         "question": _clip_text(
             _redact_lineage_text(item.get("query", ""), sensitive_values),
             1_000,
@@ -896,7 +896,7 @@ _MANAGEMENT_SYSTEM_PROMPT = """너는 여러 SQL 결과를 하나의 맥락으�
 - 각 표의 질문, SQL, 원본 테이블, 컬럼 역할, 기간, 단위, 집계 그레인을 먼저 파악한다.
 - 표 간 연결은 relationships의 값 중첩과 신뢰도를 우선한다. 기간·단위·그레인이 다르면 직접 비교하지 않는다.
 - 사실, 해석, 제안을 구분한다. 상관관계를 원인으로 단정하지 말고 추정이면 명확히 표시한다.
-- 중요한 판단마다 데이터셋 ID, 컬럼, 기간과 실제 값을 근거로 적는다. 데이터가 부족하면 한계와 후속 질문을 제시한다.
+- 중요한 판단마다 표 번호(표1, 표2, 표3...), 컬럼, 기간과 실제 값을 근거로 적는다. 표 출처를 표시할 때는 D1 같은 영문형 식별자 대신 표1 형식을 사용하되, 실제 데이터 값에 포함된 D1은 변경하지 않는다. 데이터가 부족하면 한계와 후속 질문을 제시한다.
 
 [분석 원칙]
 - 개별 표를 따로 요약하는 데 그치지 말고 핵심 지표, 추세, 변동 요인, 집중도, 이상치와 표 사이의 일치·충돌을 종합해 하나의 진단을 내린다.
