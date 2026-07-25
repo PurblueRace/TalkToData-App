@@ -95,6 +95,8 @@ class SqlPromptTests(unittest.TestCase):
         self.assertIn("방언=PostgreSQL", prompt)
         self.assertIn("데이터종료일=2026-07-31", prompt)
         self.assertIn("대분류='수익' AND 중분류='매출액'", prompt)
+        self.assertIn("일반 조직 접미사를 제외한 핵심어", prompt)
+        self.assertIn("인사운영부서→인사운영", prompt)
         self.assertIn("2026년 월별 매출", prompt)
         self.assertNotIn("Q:", prompt)
         self.assertNotIn("A:", prompt)
