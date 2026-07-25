@@ -14,6 +14,7 @@ import textwrap
 import html
 import hmac
 import secrets
+import analysis_visuals as analysis_visuals_module
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
@@ -27,7 +28,6 @@ from analysis_context import (
 )
 from analysis_visuals import (
     build_management_chart_html,
-    embed_management_chart_in_rendered_report,
     prepare_analysis_visual_data,
     should_embed_management_chart,
 )
@@ -3407,6 +3407,35 @@ _MANAGEMENT_CHART_KIND_SCORE = {
 }
 
 
+def _embed_management_chart_compat(
+    rendered_report: str,
+    trusted_chart_html: str,
+) -> str:
+    """Support both freshly loaded and still-cached analysis helper modules."""
+    current_helper = getattr(
+        analysis_visuals_module,
+        "embed_management_chart_in_rendered_report",
+        None,
+    )
+    if callable(current_helper):
+        return current_helper(rendered_report, trusted_chart_html)
+    if not trusted_chart_html or 'data-analysis-chart="1"' in rendered_report:
+        return rendered_report
+    diagnosis = re.search(
+        r'<(?:section|div)\b[^>]*class="[^"]*report-section[^"]*"[^>]*>\s*'
+        r'<h[2-4]\b[^>]*>\s*핵심\s*진단',
+        rendered_report,
+        flags=re.IGNORECASE,
+    )
+    if diagnosis is None:
+        return rendered_report
+    return (
+        rendered_report[: diagnosis.start()]
+        + trusted_chart_html
+        + rendered_report[diagnosis.start() :]
+    )
+
+
 def create_management_analysis_chart(
     saved_tables: List[Dict],
     report_text: str = "",
@@ -3518,7 +3547,7 @@ def generate_comprehensive_report(saved_tables: List[Dict], additional_prompt: s
                 f"{type(chart_error).__name__}"
             )
         rendered_report = render_management_report_html(report)
-        return embed_management_chart_in_rendered_report(
+        return _embed_management_chart_compat(
             rendered_report,
             trusted_chart_html,
         )
