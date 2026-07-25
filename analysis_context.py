@@ -896,7 +896,7 @@ _MANAGEMENT_SYSTEM_PROMPT = """너는 여러 SQL 결과를 하나의 맥락으�
 - 각 표의 질문, SQL, 원본 테이블, 컬럼 역할, 기간, 단위, 집계 그레인을 먼저 파악한다.
 - 표 간 연결은 relationships의 값 중첩과 신뢰도를 우선한다. 기간·단위·그레인이 다르면 직접 비교하지 않는다.
 - 사실, 해석, 제안을 구분한다. 상관관계를 원인으로 단정하지 말고 추정이면 명확히 표시한다.
-- 중요한 판단마다 표 번호(표1, 표2, 표3...), 컬럼, 기간과 실제 값을 근거로 적는다. 표 출처를 표시할 때는 D1 같은 영문형 식별자 대신 표1 형식을 사용하되, 실제 데이터 값에 포함된 D1은 변경하지 않는다. 데이터가 부족하면 한계와 후속 질문을 제시한다.
+- 중요한 판단마다 표 번호(표1, 표2, 표3...), 컬럼, 기간과 실제 값을 근거로 적는다. 표 출처를 표시할 때는 D1 같은 영문형 식별자 대신 표1 형식을 사용하되, 실제 데이터 값에 포함된 D1은 변경하지 않는다. 데이터가 부족하면 추가로 찾을 표 2~3개와 짧은 검색 질문을 제시한다.
 
 [분석 원칙]
 - 개별 표를 따로 요약하는 데 그치지 말고 핵심 지표, 추세, 변동 요인, 집중도, 이상치와 표 사이의 일치·충돌을 종합해 하나의 진단을 내린다.
@@ -906,8 +906,9 @@ _MANAGEMENT_SYSTEM_PROMPT = """너는 여러 SQL 결과를 하나의 맥락으�
 [출력 형식]
 - 설명, JSON, Markdown, 코드 펜스 없이 순수한 HTML 조각만 출력한다. html/head/body/style/script 태그와 인라인 style 속성은 쓰지 않는다.
 - 허용 태그: article, section, div, h1, h2, h3, h4, p, small, strong, b, em, span, ul, ol, li, table, caption, thead, tbody, tfoot, tr, th, td, dl, dt, dd, br, hr.
-- 아래 클래스만 조합해 사용한다: report-hero, report-kicker, report-title, report-subtitle, report-section, section-heading, section-intro, table-wrap, data-table, evidence-note, priority, priority--high, priority--medium, priority--low, bullet-list, detail-list, muted.
+- 아래 클래스만 조합해 사용한다: report-hero, report-kicker, report-title, report-subtitle, report-section, section-heading, section-intro, table-wrap, data-table, evidence-note, bullet-list, detail-list, muted.
 - report-hero 아래의 핵심 내용은 모두 가로폭 100%의 data-table로 구성한다. 단, 근거가 부족한 섹션의 한계 안내는 evidence-note를 사용할 수 있다. 카드, KPI 카드, 2열 그리드, 좌우 분할 레이아웃은 사용하지 않는다.
+- 표 셀 안에는 배경색이나 둥근 테두리가 있는 배지·태그·타원형 강조 요소를 넣지 않고 일반 텍스트와 strong만 사용한다.
 - "표 간 관계와 비교 가능성" 및 "리스크와 기회"라는 독립 섹션이나 표는 출력하지 않는다.
 - 원시 JSON 키나 대괄호·중괄호를 화면에 노출하지 않는다. 같은 모양의 세로 강조선도 사용하지 않는다."""
 
@@ -929,15 +930,20 @@ def build_management_analysis_prompts(
 2. "핵심 지표와 변화" data-table: 지표 / 기준 기간 / 비교 기간 / 변화 / 근거와 해석
 3. "핵심 진단" data-table: 번호 / 진단 / 확인된 사실과 수치 / 경영 해석. 여러 표를 유기적으로 연결한 결론 3~5개
 4. "실행 계획" data-table: 우선순위 / 실행 과제 / 실행 근거 / 담당 역할·시기 / 확인 지표·검증 방법
-5. "한계와 다음 질문" data-table: 구분 / 내용 / 추가로 필요한 데이터 또는 후속 자연어 SQL 질문
+5. "추가로 찾을 표" data-table: 순서 / 추가로 찾을 표 / 짧은 검색 질문. 현재 분석을 보완할 표를 반드시 2~3개만 추천
 
 [작성 기준]
 - 모든 주요 섹션은 report-section 안에 table-wrap과 data-table을 하나씩 두는 동일한 형식으로 작성한다.
 - 카드형 div, kpi-grid, insight-grid, action-grid와 2열 배치를 사용하지 않는다. 핵심 진단도 반드시 표로 작성한다.
+- 표 안의 문구를 배경색이나 둥근 타원으로 감싸지 않는다. 우선순위와 진단도 일반 셀 텍스트로 작성한다.
 - 표 간 관계·비교 가능성과 리스크·기회를 별도 제목이나 별도 표로 만들지 않는다. 필요한 내용은 핵심 진단의 근거 또는 실행 계획의 실행 근거에만 간결하게 녹인다.
+- "추가로 찾을 표"에는 서로 다른 표 2~3개를 제안하고, 각 행의 검색 질문은 한 번에 표 하나만 조회하는 짧은 한 문장(권장 20~45자)으로 쓴다.
+- 검색 질문에는 필요한 기간·구분 기준·핵심 지표만 넣고 원인 분석, 검증 절차, 여러 후속 작업을 한 문장에 합치지 않는다. 예: "2026년 월별 제품별 매출과 매출원가 보여줘", "2026년 6~7월 계정별 판관비 보여줘", "프로젝트별 누적 매출과 비용 보여줘".
+- 검색 질문의 테이블·컬럼 표현은 database_schema_blueprint, source_tables, columns.name에서 확인되는 용어를 우선 사용하고 없는 업무 용어를 만들지 않는다.
+- 추가 표 2~3개를 각각 조회해 저장한 뒤 다시 AI 분석에 함께 넣을 수 있도록 추천한다.
 - 표 제목은 자연스러운 한국어로 쓰고 EVIDENCE_JSON의 영문 키를 그대로 노출하지 않는다.
 - 숫자는 천 단위 구분과 적절한 단위를 사용하되 원래 값의 의미를 바꾸지 않는다.
-- 표는 3~6개 열, 3~8개 행으로 제한해 가로로 읽기 쉽게 만들고, 긴 설명은 "근거와 해석"처럼 폭이 넓은 마지막 열에 배치한다.
+- "추가로 찾을 표"는 3개 열과 2~3개 행, 나머지 표는 3~6개 열과 3~8개 행으로 제한해 가로로 읽기 쉽게 만든다. 긴 설명은 "근거와 해석"처럼 폭이 넓은 마지막 열에 배치한다.
 - 데이터가 뒷받침되지 않는 표는 억지로 채우지 말고 해당 report-section에 evidence-note로 한계를 표시한다.
 - 실제 비교 기준이 없으면 증감률을 만들지 않는다.
 - 전체 보고서는 반복 없이 빠르게 훑어볼 수 있게 구성한다."""
@@ -1081,7 +1087,6 @@ _BLOCKED_REPORT_CONTENT_TAGS = {
 _ALLOWED_REPORT_CLASSES = {
     "report-hero", "report-kicker", "report-title", "report-subtitle", "report-section",
     "section-heading", "section-intro", "data-table", "evidence-note",
-    "priority", "priority--high", "priority--medium", "priority--low",
     "bullet-list", "detail-list", "muted",
 }
 _AUTO_TABLE_WRAP = "__auto_table_wrap__"
@@ -1301,10 +1306,6 @@ body {{ margin: 0; background: #f4f7fb; color: #1d2939; font-family: Pretendard,
 .data-table tbody tr:nth-child(even) td {{ background: #fbfcfe; }}
 .data-table tr:last-child td {{ border-bottom: 0; }}
 .evidence-note {{ background: #f8fafc; border: 1px solid #e4e7ec; border-radius: 12px; padding: 13px 15px; color: #475467; font-size: 13px; }}
-.priority {{ display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 800; background: #eef2f6; color: #344054; }}
-.priority--high {{ background: #fee4e2; color: #b42318; }}
-.priority--medium {{ background: #fef0c7; color: #b54708; }}
-.priority--low {{ background: #eaf2ff; color: #175cd3; }}
 .bullet-list {{ margin: 8px 0; padding-left: 20px; }}
 .bullet-list li {{ margin: 7px 0; }}
 .detail-list {{ display: grid; grid-template-columns: minmax(90px, 150px) 1fr; gap: 8px 14px; margin: 8px 0; }}

@@ -358,6 +358,19 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         self.assertIn("표 번호(표1, 표2, 표3...)", system_prompt)
         self.assertIn("D1 같은 영문형 식별자 대신 표1 형식", system_prompt)
         self.assertIn("실제 데이터 값에 포함된 D1은 변경하지 않는다", system_prompt)
+        self.assertIn(
+            '"추가로 찾을 표" data-table: 순서 / 추가로 찾을 표 / 짧은 검색 질문.',
+            user_prompt,
+        )
+        self.assertIn("반드시 2~3개만 추천", user_prompt)
+        self.assertIn("한 번에 표 하나만 조회", user_prompt)
+        self.assertIn("권장 20~45자", user_prompt)
+        self.assertIn("3개 열과 2~3개 행", user_prompt)
+        self.assertIn("database_schema_blueprint, source_tables, columns.name", user_prompt)
+        self.assertNotIn('"한계와 다음 질문" data-table', user_prompt)
+        self.assertNotIn("추가로 필요한 데이터 또는 후속 자연어 SQL 질문", user_prompt)
+        self.assertNotIn("분석에 필요한 이유", user_prompt)
+        self.assertNotIn("priority--high", system_prompt)
         self.assertIn('"표 간 관계와 비교 가능성" 및 "리스크와 기회"', system_prompt)
         self.assertNotIn('4. "표 간 관계와 비교 가능성"', user_prompt)
         self.assertNotIn('"리스크와 기회" data-table', user_prompt)
@@ -428,7 +441,7 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
           <input type="hidden" value="should-not-break-the-report">
           <table>
             <thead><tr><th>지표</th><th>값</th></tr></thead>
-            <tbody><tr><td>매출</td><td>100,000,000원</td></tr></tbody>
+            <tbody><tr><td>매출</td><td><span class="priority priority--high">100,000,000원</span></td></tr></tbody>
           </table>
           <div class="insight-grid"><div class="insight-card">카드 회귀 방지</div></div>
           <img src="https://example.com/tracker.png">
@@ -442,6 +455,9 @@ class ManagementAnalysisPromptTests(unittest.TestCase):
         self.assertIn('class="data-table"', rendered)
         self.assertEqual(rendered.count('class="table-wrap"'), 1)
         self.assertIn("100,000,000원", rendered)
+        self.assertNotIn('class="priority', rendered)
+        self.assertNotIn(".priority {", rendered)
+        self.assertNotIn("border-radius: 999px", rendered)
         self.assertIn("카드 회귀 방지", rendered)
         self.assertIn("min-width: 960px", rendered)
         self.assertNotIn('class="insight-grid"', rendered)
